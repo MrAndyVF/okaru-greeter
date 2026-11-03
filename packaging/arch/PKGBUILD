@@ -1,0 +1,29 @@
+# Paquete local de OKARU Greeter: compila la rama main de ~/Projects/okaru-greeter (solo lo que está en commits).
+pkgname=okaru-greeter
+pkgver=1.0.0
+pkgrel=1
+pkgdesc='OKARU Greeter: pantalla de inicio de sesión para greetd'
+arch=(x86_64)
+url='https://github.com/MrAndyVF/okaru-greeter'
+license=(MIT)
+depends=(bash cairo dbus fontconfig freetype2 gcc-libs glib2 glibc greetd libglvnd libinput libjxl librsvg libwebp
+         libxkbcommon libxml2 pango tomlplusplus wayland wlroots0.20)
+makedepends=(git meson ninja pkgconf wayland-protocols stb nlohmann-json)
+optdepends=('okaru: sincroniza fondo, colores y monitores desde la shell')
+source=("okaru-greeter::git+file://${OKARU_GREETER_REPO:-$HOME/Projects/okaru-greeter}#branch=main")
+sha256sums=(SKIP)
+
+pkgver() {
+  cd okaru-greeter
+  git describe --long --tags --abbrev=9 | sed 's/^v//; s/-\([0-9]*\)-g/.r\1.g/'
+}
+
+build() {
+  arch-meson okaru-greeter build
+  meson compile -C build
+}
+
+package() {
+  meson install -C build --destdir "$pkgdir"
+  install -Dm644 okaru-greeter/LICENSE -t "$pkgdir/usr/share/licenses/$pkgname"
+}

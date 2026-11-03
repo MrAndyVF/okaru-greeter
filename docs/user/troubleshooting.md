@@ -1,0 +1,411 @@
+---
+title: Troubleshooting
+description: Find logs and resolve greeter startup, login, display, sync, and input problems.
+sidebar:
+  order: 6
+---
+
+Start with the greetd and OKARU Greeter logs. The message immediately before a blank screen, failed login, or failed sync is usually more useful than the visible symptom.
+
+- [Logging](#logging)
+- [Startup and display](#startup-and-display)
+- [Login and session](#login-and-session)
+- [Sync and Polkit](#sync-and-polkit)
+- [Appearance and input](#appearance-and-input)
+
+## Logging
+
+Under greetd, OKARU Greeter logs to **syslog** by default. On systemd the messages go to journald; OpenRC systems commonly use syslog-ng, metalog, or another system logger. The session wrapper parks stdout and stderr so wlroots and libseat messages do not flash on the virtual terminal before DRM takes over.
+
+On systemd, inspect the current boot's greetd log and look for the `okaru-greeter` identifier:
+
+```sh
+journalctl -u greetd -b | grep okaru-greeter
+```
+
+The service may have a different unit name on a distribution-provided setup. On a non-systemd installation, use that system's greetd service log or system log.
+
+`OKARU_GREETER_LOG` changes the destination:
+
+| Value                 | Effect                                                                             |
+| --------------------- | ---------------------------------------------------------------------------------- |
+| Unset                 | Log through syslog; keep stdout and stderr parked                                  |
+| `stderr`              | Send informational and debug messages to stdout, and warnings and errors to stderr |
+| An absolute file path | Append to that file and continue logging through syslog                            |
+
+`WLR_LOG` controls messages from the bundled wlroots compositor. Accepted values are
+`silent`, `error`, `info`, and `debug`; the session wrapper defaults to `error`.
+
+For temporary console diagnostics, add the variable to the greetd session command:
+
+```toml
+[default_session]
+command = "env OKARU_GREETER_LOG=stderr WLR_LOG=info /usr/bin/okaru-greeter-session"
+```
+
+greetd does not interpret a bare environment assignment as a command, so keep the explicit `env`. Remove debug logging after diagnosing the problem.
+
+## Startup and display
+
+### Blank screen
+
+Check the logs first. Confirm that `/var/lib/okaru-greeter` exists, is mode `0750`, and is owned by the account configured as greetd's greeter user. Also verify that the greeter package's required `assets/` tree was installed.
+
+Follow [greeter state initialization](installation.md#initialize-greeter-state), including the tmpfiles override if greetd uses a custom greeter account. Run `sudo okaru-greeter-apply-appearance --setup-system` to initialize or repair the configuration files after fixing directory ownership. Whether reinstalling a package performs this setup depends on the distribution's packaging.
+
+For a source checkout, `sudo ./scripts/setup_greeter_system.sh` performs the complete system setup, including its PAM adjustment; `just setup-log-dir` repairs only the state directory. Follow your distribution's PAM integration and setup procedure. See [Installation](installation.md#3-configure-greetd).
+
+### Black screen after reboot
+
+Treat this like a blank screen: inspect the current-boot logs, confirm that the state directory was recreated with the right owner, and check that referenced wallpaper files still exist. A tmpfiles rule that assumes a different greeter account can recreate the directory with the wrong ownership.
+
+### Intel eDP stays black until a VT switch
+
+If the compositor log shows a successful output modeset and first frame, but an
+internal Intel display remains black until switching to another VT and back,
+inspect the kernel journal:
+
+```sh
+journalctl -b -k | grep -F "Selective fetch area calculation failed"
+```
+
+This can indicate an i915 Panel Self Refresh 2 (PSR2) selective-fetch problem,
+particularly on Meteor Lake laptops. The warning alone does not prove the
+cause, because i915 normally falls back to a full update. Update the kernel and
+firmware first. As a diagnostic, temporarily add this kernel parameter in the
+bootloader:
+
+```text
+i915.enable_psr2_sel_fetch=0
+```
+
+If that makes the greeter visible on the first modeset, persist the parameter
+through the distribution's bootloader configuration and report the hardware
+and kernel version to the distribution or Intel DRM maintainers. The parameter
+disables a display power-saving optimization and may increase power use. See
+the related [upstream Intel DRM PSR report](https://gitlab.freedesktop.org/drm/i915/kernel/-/work_items/11762).
+
+### Failed to spawn client or wrong executable path
+
+The greetd `command` must use the full installed path to `okaru-greeter-session`, often `/usr/bin/okaru-greeter-session` for a package and `/usr/local/bin/okaru-greeter-session` for a manual install. Find it with:
+
+```sh
+command -v okaru-greeter-session
+```
+
+Update `/etc/greetd/config.toml` as shown in [Configure greetd](installation.md#3-configure-greetd).
+
+### `WAYLAND_DISPLAY is not set`
+
+greetd must launch `okaru-greeter-session`, not the `okaru-greeter` client directly. The session wrapper starts the bundled compositor, which creates `WAYLAND_DISPLAY` before launching the client. Correct the session command in `/etc/greetd/config.toml`.
+
+### Wrong size or only one monitor looks right
+
+Check that `[output].name` matches a connector or stable identifier reported by
+`okaru-greeter outputs --details`. Review the configured layout and scales
+when using more than one monitor. See [Displays](displays.md).
+
+### Blank flash or modeset during login
+
+The greeter uses each display's complete EDID-preferred mode by default. If the
+desktop session uses a different DRM mode, set
+`[output].width`, `[output].height`, and `[output].refresh_rate` to the desktop's
+mode; both dimensions are required when either is set. See
+[Match the desktop output mode](displays.md#match-the-desktop-output-mode).
+For monitors with different refresh rates, set `[output].refresh_rate` to a
+mapping such as `"DP-1:120; HDMI-A-1:60"`.
+
+### Atomic commit failure during direct scan-out
+
+OKARU Greeter disables wlroots direct scan-out by default. The optimization
+is not needed for a short-lived login session, and avoiding it removes a
+driver-sensitive path from multi-output presentation. An explicit
+`WLR_SCENE_DISABLE_DIRECT_SCANOUT` value is still honored; set it to `0` only
+when testing direct scan-out deliberately.
+
+On version 1.5.0, `Atomic commit failed` followed by `Direct scan-out disabled`
+means wlroots rejected the optional scan-out path and attempted compositing as
+a fallback; those two lines alone do not identify why the greeter later exited.
+Upgrade first. To test the same mitigation temporarily on 1.5.0, use:
+
+```toml
+[default_session]
+command = "env WLR_SCENE_DISABLE_DIRECT_SCANOUT=1 /usr/bin/okaru-greeter-session"
+```
+
+If the current version still exits, capture the subsequent compositor line
+reporting the greeter's exit status or signal and any Wayland or EGL error from
+the greeter process. Those later lines identify the actual exit path.
+
+### Screen never blanks
+
+Set `[idle].timeout` in `greeter.toml`. The default is `0`, which disables blanking. Pointer motion does not reset the timer while the display is on. See [Blank displays when idle](displays.md#blank-displays-when-idle).
+
+### Blanked screen does not wake
+
+Press a key, click a mouse button, or touch the screen. Pointer movement and scrolling should also wake an already blanked screen. If the outputs remain off, inspect the compositor log for idle or output-commit errors.
+
+### Interface is too small or too large
+
+Set `[output].scale` for one global UI scale, or `[output].scales` for connector-specific values. See [Scale the interface](displays.md#scale-the-interface).
+
+### Display is stuck during development
+
+From another TTY or an SSH session, a **source checkout only** provides:
+
+```sh
+just recover
+```
+
+This command terminates greeter and compositor processes and stops greetd, so use it only when recovering a development run. It is not installed by distribution packages.
+
+## Login and session
+
+### Keyring or KWallet asks for a password after login
+
+GNOME Keyring and KWallet store passwords used by applications, such as saved
+Wi-Fi or browser credentials. Their unlock password is separate from your
+account password, so a successful login does not necessarily unlock them.
+Automatic unlocking needs integration between your secret store and greetd,
+the login service behind OKARU Greeter.
+
+#### Password login
+
+The password you enter at login can also unlock your keyring or wallet when
+their passwords match and login integration is enabled:
+
+1. Install your chosen store and its login integration. On Arch Linux, use
+   `gnome-keyring` for GNOME Keyring or `kwallet-pam` for KWallet; other
+   distributions may package the integration separately.
+2. In **Passwords and Keys (Seahorse)**, set the **Login** keyring password to
+   your account password. For KWallet, use **KWalletManager** to do the same
+   for **kdewallet**.
+3. Enable the integration in `/etc/pam.d/greetd`. For greetd, this is the file
+   to change even if a general guide uses `/etc/pam.d/login`.
+
+For **GNOME Keyring**, add these entries if they are not already present in
+that file or its included configuration:
+
+```text
+auth       optional     pam_gnome_keyring.so
+session    optional     pam_gnome_keyring.so auto_start
+```
+
+For **KWallet** on current Arch Linux (Plasma 6), use these instead:
+
+```text
+auth       optional     pam_kwallet5.so
+session    optional     pam_kwallet5.so auto_start force_run kwalletd=/usr/bin/ksecretd
+```
+
+Keep the existing rules: the `auth` entry goes after password authentication,
+and the `session` entry goes after the existing session setup. On NixOS or
+other systems that generate PAM files, enable the integration through the
+system configuration instead.
+
+Standalone compositor sessions, such as niri or Hyprland, may also need to
+start the store's session helper. See [GNOME Keyring setup](https://wiki.archlinux.org/title/GNOME/Keyring#PAM_step)
+or [KWallet setup](https://wiki.archlinux.org/title/KDE_Wallet#Configure_PAM_on_Plasma_6_(KF6))
+for startup instructions. KWallet's daemon path may differ on other
+distributions; its automatic unlocking supports password-encrypted wallets,
+not GPG wallets.
+
+If you log in with a fingerprint, face, or smartcard instead of a password,
+there may be no password available to unlock the store. A separate unlock
+prompt is then expected.
+
+#### Autologin with an encrypted disk
+
+greetd's `[initial_session]` autologin skips the login screen, so no account
+password is entered to unlock the keyring. You can unlock it when prompted
+after login, or configure it to reuse the disk password entered at boot.
+
+Reusing the disk password requires it to match your keyring or wallet password
+and remain available to the login service. greetd skips the authentication
+step during autologin, so the password-login entries above cannot capture a
+password. Instead, install `pam_fde_boot_pw` and configure it in the session
+section of `/etc/pam.d/greetd`, before the keyring or wallet starts. Use
+`inject_for=gkr` for GNOME Keyring or `inject_for=kwallet5` for KWallet.
+Follow the
+[ArchWiki greetd autologin guide](https://wiki.archlinux.org/title/Greetd#Unlocking_keyring_on_autologin_using_the_cryptsetup_password)
+for GNOME Keyring or KWallet setup.
+
+If the disk unlocks without a password, or the boot password is no longer
+available, you will still need to unlock the keyring separately.
+
+### `Login service stopped responding`
+
+greetd did not answer a request before the watchdog expired. Inspect the greetd journal for a stalled or crashed PAM or session worker, then restart greetd. `[auth].request_timeout` controls the watchdog; its default is `60` seconds, and `0` disables it. See [Configuration](configuration.md).
+
+### Fingerprint blocks password login
+
+PAM authentication is serialized. While `pam_fprintd` is waiting for a
+fingerprint, it cannot check a password at the same time. The greetd IPC also
+exposes one PAM conversation, so the greeter cannot safely bypass the active
+fingerprint module or start a parallel password stack. This is an upstream PAM
+limitation documented by [`pam_fprintd(8)`](https://manpages.debian.org/testing/libpam-fprintd/pam_fprintd.8.en.html)
+and the [greetd IPC protocol](https://manpages.debian.org/testing/greetd/greetd-ipc.7.en.html).
+
+When `/etc/pam.d/greetd` places `pam_fprintd` before `pam_unix`, a password
+typed before authentication starts remains queued until the fingerprint attempt
+succeeds, fails, or times out; it has not yet been accepted or rejected by
+`pam_unix`.
+
+Choose the behavior that fits the system:
+
+- Scan a finger, or wait for the fingerprint module to time out before the PAM
+  stack reaches its password module.
+- Give `pam_fprintd` a shorter `timeout` or fewer `max-tries` in
+  `/etc/pam.d/greetd`, reducing the delay before password fallback.
+- If fingerprint login is not needed at the login screen, remove the
+  `pam_fprintd` line from `/etc/pam.d/greetd`.
+
+`[auth].allow_empty_password = true` only permits submitting an empty password
+field so fingerprint or smartcard PAM can start. It does not make fingerprint
+and password authentication parallel. Keep `[auth].request_timeout` longer
+than the configured `pam_fprintd` timeout, or set it to `0`, so the greeter's
+watchdog does not expire before PAM reaches the password fallback.
+
+### Wrong session is selected on startup
+
+Use the desktop entry's **`Name=`** value from `okaru-greeter sessions`, or its `.desktop` filename without the extension. A `Name=` match wins if both apply. Command-line `--session` takes precedence over `[session].default`, which takes precedence over the last-used `[session].last` value in `sync.toml`.
+
+Put names containing spaces or punctuation in `greeter.toml` instead of leaving them unquoted in the greetd command. See [Default session](configuration.md#default-session).
+
+### GNOME returns to the greeter
+
+GNOME expects a systemd-managed user session and may fail with a `graphical-session-pre.target` error. The greeter passes `XDG_SESSION_TYPE` and the desktop entry's `DesktopNames` environment through greetd, but GNOME support remains best-effort compared with GDM. If the normal entry still fails, use GDM for GNOME or create a suitable `wayland-sessions` wrapper.
+
+### X11 session doesn't start
+
+`xsessions` entries run through `okaru-greeter-xsession`, which needs
+`startx` (from `xinit`) installed. `startx: command not found` (or
+okaru-greeter's own "startx not found" error) in the session log means
+`xinit` is missing.
+
+If `startx` is present but Xorg itself fails, reproduce the exact wrapper
+invocation by hand from a terminal to see the real Xorg error:
+
+```sh
+okaru-greeter-xsession /path/to/session/binary
+```
+
+A `parse_vt_settings: Cannot open /dev/tty0 (Permission denied)` error here
+usually means `XDG_VTNR` was unset in the environment you ran this from (it
+is only guaranteed to be set for a real session opened by greetd's PAM
+stack, e.g. via `pam_elogind.so`/`pam_systemd.so` in `/etc/pam.d/greetd`) —
+this is expected when testing from an existing desktop session rather than
+through the greeter.
+
+If Xorg starts but the screen shows a terminal instead of the desktop, with
+an error like `xterm: bad command line option`, the wrapper's `startx` fell
+back to its default client instead of running the session — this is handled
+automatically since okaru-greeter resolves `Exec=` to an absolute path
+before calling `startx`, but a very old or unusual `startx` implementation
+may still behave differently. See
+[Default session](configuration.md#default-session) for what the wrapper
+does and why.
+
+## Sync and Polkit
+
+### Appearance sync
+
+If the synced look is missing, first check the installed versions. The
+constrained `--sync` path requires OKARU Greeter 1.5.0 or newer together
+with the next OKARU release after 5.0.1; current `-git` packages, `main`
+checkouts, or manual builds from current `main` work when both projects are up
+to date. Older and mixed-version combinations use the permanently supported
+administrator-authenticated legacy positional path instead.
+
+Confirm that `okaru-greeter-apply-appearance` and an appropriate privilege
+tool are installed. The constrained path also requires `pkexec` and the
+packaged Polkit action. Run **Settings → Security → OKARU Greeter → Sync
+Now** again, then log out or restart greetd. See [Sync with OKARU](sync.md).
+OKARU rejects a helper in a user-owned checkout or writable prefix; manual
+builds must be installed into a root-owned, non-user-writable system prefix.
+
+### No privilege escalator is available
+
+The constrained `--sync` mode requires `pkexec` on `PATH`; direct `sudo`,
+`doas`, and `run0` invocations are unsupported for that mode. On NixOS, enable
+the Polkit `pkexec` wrapper. Without a passwordless rule, a working Polkit
+authentication agent prompts for administrator authentication every time; this
+is a supported permanent setup. The authenticated legacy positional mode may
+use `run0`, `pkexec`, or OKARU's configured privilege-command prefix. See
+[Session and runtime requirements](sync.md#session-and-runtime-requirements)
+for terminal alternatives.
+
+### Passwordless sync still prompts
+
+On a conventional packaged distribution, check whether the selected account is
+present in the greeter-managed rule:
+
+```sh
+okaru-greeter passwordless-sync status alice
+```
+
+Rerun status with `sudo` if the distribution restricts reads of its Polkit
+rules directory.
+
+If needed, add it with
+`sudo okaru-greeter passwordless-sync enable alice`. The installed Greeter
+must be 1.5.0 or newer, the package must include the dedicated
+`dev.okaru.greeter.sync-appearance` action, and Polkit must see the caller as
+an active local session. A seatd-only session without logind or elogind cannot
+match this rule.
+
+On NixOS, inspect the evaluated `passwordless-sync-users` option or the
+declarative `security.polkit.extraConfig` rule instead of relying on an
+imperative `/etc` change. See [Authorization](sync.md#authorization) for both
+setup models and the exact rule constraints.
+
+To remove the account from the CLI-managed authorization, run:
+
+```sh
+sudo okaru-greeter passwordless-sync disable alice
+```
+
+Administrator-prompted constrained sync and the permanently authenticated
+legacy path remain available after disabling the rule. Prompts resume when no
+separate administrator-authored Polkit rule also authorizes that account.
+
+### Sync Now does nothing or the look remains unchanged
+
+OKARU first probes the helper's protocol. A compatible pair with the default
+state directory stages appearance data and waits for Polkit to authorize
+`okaru-greeter-apply-appearance --sync <staging-dir>`; a recognized older
+helper or a custom state directory uses the authenticated positional call
+instead. An unrecognized or malformed probe response stops safely rather than
+guessing a protocol. Inspect the OKARU notification and logs for the probe,
+staging, or authorization error. OKARU warns when approval is still pending
+after 90 seconds.
+
+On a seatd-only session without logind or elogind, the graphical Polkit agent
+cannot register. Run the terminal command for the applicable constrained or legacy
+mode shown in [Session and runtime requirements](sync.md#session-and-runtime-requirements),
+then log out to view the newly installed appearance.
+
+### Polkit reports `No session for pid`
+
+This is expected when using seatd without logind or elogind: Polkit has no active graphical session to associate with the process. Use terminal or console `pkexec` for an administrator-authenticated sync, or install elogind to provide session tracking. A passwordless rule limited to active local sessions cannot match a seatd-only session.
+
+## Appearance and input
+
+### User avatars are missing
+
+Install and enable AccountsService, commonly provided by an `accountsservice` package and `accounts-daemon` service. The greeter reads each user's `IconFile` from AccountsService and displays a fallback when the service or image is unavailable. Avatars are not copied by appearance sync.
+
+### Cursor theme is missing or falls back to the default
+
+Set `[cursor].theme` to the exact, case-sensitive directory name of an installed
+XCursor theme, not its desktop display name. For example, Arch Linux's Breeze
+package uses `breeze_cursors`, not `Breeze`. If the theme is outside the default
+search path, also set `[cursor].path`. The path and theme files must be readable
+by the greetd user; a theme installed only in your home directory is normally
+unavailable.
+
+When a requested theme is unavailable, the compositor logs `cursor theme ...
+was not found` and wlroots uses a built-in fallback. The fallback may appear too
+small on scaled outputs even when `[cursor].size` is set. Install the theme for
+the system, correct its name or search path, and restart greetd. See
+[Cursor theme](input.md#cursor-theme).
