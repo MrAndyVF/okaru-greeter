@@ -9,7 +9,7 @@ license=(MIT)
 depends=(bash cairo dbus fontconfig freetype2 gcc-libs glib2 glibc greetd libglvnd libinput libjxl librsvg libwebp
          libxkbcommon libxml2 pango tomlplusplus wayland wlroots0.20)
 makedepends=(git meson ninja pkgconf wayland-protocols stb nlohmann-json)
-optdepends=('okaru: sincroniza fondo, colores y monitores desde la shell')
+optdepends=('okaru: sincroniza fondo, colores y monitores desde la shell (paquete propio)')
 source=("okaru-greeter::git+file://${OKARU_GREETER_REPO:-$HOME/Projects/okaru-greeter}#branch=main")
 sha256sums=(SKIP)
 
