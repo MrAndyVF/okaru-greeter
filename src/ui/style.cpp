@@ -3,7 +3,7 @@
 #include <algorithm>
 
 float Style::s_uiScale = 1.0f;
-float Style::s_cornerRadiusScale = 1.0f;
+float Style::s_cornerRadiusScale = 0.0f; // OKARU: esquinas rectas
 
 void Style::setUiScale(float scale) noexcept { s_uiScale = std::clamp(scale, kMinUiScale, kMaxUiScale); }
 

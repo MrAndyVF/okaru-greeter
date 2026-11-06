@@ -4,7 +4,7 @@
 
 #include <algorithm>
 
-Palette palette = noctalia::theme::findBuiltinPalette("Noctalia")->dark.palette;
+Palette palette = noctalia::theme::findBuiltinPalette("OKARU")->dark.palette;
 
 namespace {
   Signal<>& paletteSignal() {

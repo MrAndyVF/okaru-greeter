@@ -112,7 +112,7 @@ namespace {
   convertTomlAppearance(const greeter::config::GreeterTomlAppearance& appearance) {
     GreeterSyncedAppearance result;
     result.themeMode = appearance.themeMode.value_or("dark");
-    result.cornerRadiusScale = appearance.cornerRadiusScale.value_or(1.0f);
+    result.cornerRadiusScale = appearance.cornerRadiusScale.value_or(0.0f);
     result.fontFamily = appearance.fontFamily.value_or("");
 
     if (!parseTomlPaletteColor(appearance.palette, "primary", result.palette.primary)
