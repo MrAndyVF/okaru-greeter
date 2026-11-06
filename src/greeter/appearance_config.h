@@ -35,7 +35,7 @@ struct GreeterWallpaperAppearance {
 struct GreeterSyncedAppearance {
   Palette palette{};
   std::string themeMode;
-  float cornerRadiusScale = 1.0f;
+  float cornerRadiusScale = 0.0f;
   // From appearance.json "font_family"; empty means leave the greeter default.
   std::string fontFamily;
 };

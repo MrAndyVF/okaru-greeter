@@ -617,7 +617,7 @@ void GreeterSurface::initialize(RenderContext* context) {
   loadPreferences();
   (void)updateClock();
   if (m_selectedScheme >= m_schemeNames.size()) {
-    if (const auto fallback = findSchemeIndex("Noctalia")) {
+    if (const auto fallback = findSchemeIndex("OKARU")) {
       m_selectedScheme = *fallback;
     } else {
       m_selectedScheme = 0;
@@ -1854,7 +1854,7 @@ void GreeterSurface::refreshSelectionLabels() {
   syncPanelSessionChrome();
   if (m_schemeSelectLabel != nullptr) {
     const std::string schemeLabel =
-        m_schemeNames.empty() ? "Noctalia" : m_schemeNames[std::min(m_selectedScheme, m_schemeNames.size() - 1)];
+        m_schemeNames.empty() ? "OKARU" : m_schemeNames[std::min(m_selectedScheme, m_schemeNames.size() - 1)];
     m_schemeSelectLabel->setText(schemeLabel);
     m_schemeSelectLabel->setColor(colorForRole(ColorRole::OnSurface));
   }
@@ -1878,7 +1878,7 @@ void GreeterSurface::buildSchemeNames() {
 
   for (const auto& builtinPalette : noctalia::theme::builtinPalettes()) {
     m_schemeNames.emplace_back(builtinPalette.name);
-    if (!m_syncedAppearance.has_value() && builtinPalette.name == "Noctalia") {
+    if (!m_syncedAppearance.has_value() && builtinPalette.name == "OKARU") {
       m_selectedScheme = m_schemeNames.size() - 1;
     }
   }
@@ -1956,7 +1956,7 @@ void GreeterSurface::applyScheme(const std::size_t schemeIndex) {
       m_syncedAppearance = loadGreeterSyncedAppearance();
     }
     if (!m_syncedAppearance.has_value()) {
-      if (const auto fallback = findSchemeIndex("Noctalia")) {
+      if (const auto fallback = findSchemeIndex("OKARU")) {
         applyScheme(*fallback);
       }
       return;
@@ -1974,7 +1974,7 @@ void GreeterSurface::applyScheme(const std::size_t schemeIndex) {
   if (const auto* builtinPalette = noctalia::theme::findBuiltinPalette(m_schemeNames[schemeIndex])) {
     setPalette(builtinPalette->dark.palette);
   }
-  Style::setCornerRadiusScale(1.0f);
+  Style::setCornerRadiusScale(0.0f); // OKARU: esquinas rectas también con las paletas integradas
   applyConfiguredWallpaper();
 }
 
