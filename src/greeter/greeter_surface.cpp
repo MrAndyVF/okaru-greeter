@@ -1927,14 +1927,16 @@ void GreeterSurface::clearWallpaperDisplay() {
 }
 
 void GreeterSurface::applyConfiguredWallpaper() {
-  if (!m_wallpaperAppearance.has_value()) {
-    clearWallpaperDisplay();
-    return;
-  }
-
-  const auto wallpaper = m_wallpaperAppearance->wallpaperForOutput(m_boundOutputName);
+  const auto wallpaper = m_wallpaperAppearance.has_value()
+      ? m_wallpaperAppearance->wallpaperForOutput(m_boundOutputName)
+      : std::nullopt;
   if (!wallpaper.has_value()) {
+    // OKARU: sin fondo sincronizado ni configurado, el mismo wallpaper por defecto que la shell.
     clearWallpaperDisplay();
+    if (const auto fallback = paths::assetPath("okaru-wallpaper.png"); std::filesystem::exists(fallback)) {
+      m_wallpaperPath = fallback.string();
+      m_hasWallpaper = true;
+    }
     return;
   }
 
