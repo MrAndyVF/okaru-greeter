@@ -647,6 +647,24 @@ void GreeterSurface::initialize(RenderContext* context) {
     m_configErrorBanner->setVisible(true);
   }
 
+  m_okaru.build(m_root);
+  m_okaru.adoptPasswordField(m_passwordField);
+  m_okaru.setOnNextUser([this] {
+    if (m_users.size() > 1) {
+      enterPasswordStep((m_selectedUser + 1) % m_users.size());
+    }
+  });
+  const auto stepSession = [this](std::size_t delta) {
+    if (m_sessions.size() > 1) {
+      selectSession((m_selectedSession + delta) % m_sessions.size());
+      if (m_passwordField != nullptr && m_passwordField->inputArea() != nullptr) {
+        m_inputDispatcher.setFocus(m_passwordField->inputArea());
+      }
+    }
+  };
+  m_okaru.setOnNextSession([stepSession] { stepSession(1); });
+  m_okaru.setOnPreviousSession([this, stepSession] { stepSession(m_sessions.size() - 1); });
+
   if (!m_hideLogo) {
     const auto logoPath = paths::assetPath("okaru.svg");
     m_brandLogoTexture = m_renderContext->textureManager().loadFromFile(logoPath.string(), 1024, true);
@@ -707,6 +725,17 @@ void GreeterSurface::applyInitialUserSelection() {
     return;
   }
 
+  // OKARU: siempre directo a la contraseña; con varios usuarios, clic en el nombre para cambiar.
+  if (!m_users.empty()) {
+    m_selectedUser = 0;
+    setUsername(m_users.front());
+    m_passwordVisible = true;
+    m_password.clear();
+    if (m_passwordField != nullptr) {
+      m_passwordField->setValue("");
+    }
+    return;
+  }
   m_passwordVisible = false;
 }
 
@@ -1384,6 +1413,8 @@ void GreeterSurface::layoutScene(std::uint32_t width, std::uint32_t height) {
     m_statusLabel->setVisible(false);
   }
 
+  layoutOkaru(ox, oy, sw, sh);
+
   rebuildUserMenu();
   rebuildSessionMenu();
   rebuildSchemeMenu();
@@ -1420,6 +1451,42 @@ void GreeterSurface::layoutScene(std::uint32_t width, std::uint32_t height) {
     m_inputDispatcher.setFocus(m_userMenuSearchField->inputArea());
     m_userMenuSearchFocusPending = false;
   }
+}
+
+void GreeterSurface::layoutOkaru(float ox, float oy, float sw, float sh) {
+  // Lo antiguo sigue armado (foco, menús, greetd), pero no se ve: la vista dibuja todo.
+  for (Node* node : std::initializer_list<Node*>{
+           m_loginPanel,         m_headerUserGlyph,   m_headerUserAvatar, m_formSubtitleLabel, m_brandTitleLabel,
+           m_brandSubtitleLabel, m_bottomBrandLogo,   m_userSelectBox,    m_userSelectIcon,    m_userSelectLabel,
+           m_userSelectGlyph,    m_userSelectArea,    m_sessionSelectBox, m_sessionSelectIcon, m_sessionSelectLabel,
+           m_sessionSelectGlyph, m_sessionSelectArea, m_schemeSelectBox,  m_schemeSelectIcon,  m_schemeSelectLabel,
+           m_schemeSelectGlyph,  m_schemeSelectArea,  m_loginButton,      m_backButton,        m_statusLabel,
+           m_clockTimeLabel,     m_clockDateLabel,    m_shutdownButton,   m_rebootButton,      m_firmwareButton
+       }) {
+    if (node != nullptr) {
+      node->setVisible(false);
+    }
+  }
+  if (m_passwordField != nullptr) {
+    m_passwordField->setVisible(true);
+  }
+  const std::string& password = m_passwordField != nullptr ? m_passwordField->value() : m_password;
+  const auto codepoints = static_cast<std::size_t>(std::ranges::count_if(password, [](char c) {
+    return (static_cast<unsigned char>(c) & 0xC0U) != 0x80U;
+  }));
+  m_okaru.layout(
+      *m_renderContext, m_renderContext->textureManager(), ox, oy, sw, sh,
+      greeter::OkaruGreeterState{
+          .user = m_selectedUser < m_users.size() ? m_users[m_selectedUser] : m_username,
+          .canSwitchUser = m_users.size() > 1,
+          .passwordLength = codepoints,
+          .placeholder = greeter::okaruPasswordPlaceholder(),
+          .status = m_status,
+          .statusError = m_statusIsError,
+          .session = m_selectedSession < m_sessions.size() ? m_sessions[m_selectedSession].name : std::string(),
+          .canSwitchSession = m_sessions.size() > 1,
+      }
+  );
 }
 
 void GreeterSurface::tryAuthenticate() {
@@ -2074,7 +2141,12 @@ void GreeterSurface::syncWallpaperTexture() {
   } else if (!m_wallpaperPath.empty()) {
     std::error_code ec;
     if (std::filesystem::is_regular_file(m_wallpaperPath, ec) && !ec) {
-      m_wallpaperTexture = m_renderContext->textureManager().loadFromFile(m_wallpaperPath, 0, true);
+      // OKARU: el fondo va reducido y con blur fuerte, bajo el velo de la vista.
+      if (const auto blurred = greeter::loadBlurredWallpaper(m_wallpaperPath)) {
+        m_wallpaperTexture = m_renderContext->textureManager().loadFromRgba(
+            blurred->rgba.data(), blurred->width, blurred->height, false
+        );
+      }
       if (m_wallpaperTexture.id != 0) {
         m_wallpaper->setTextures(
             m_wallpaperTexture.id, {}, static_cast<float>(m_wallpaperTexture.width),

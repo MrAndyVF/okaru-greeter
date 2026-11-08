@@ -4,6 +4,7 @@
 #include "greetd/greetd_client.h"
 #include "greeter/appearance_config.h"
 #include "greeter/greeter_sessions.h"
+#include "greeter/okaru_greeter_view.h"
 #include "render/animation/animation_manager.h"
 #include "render/core/color.h"
 #include "render/core/texture_handle.h"
@@ -188,6 +189,9 @@ private:
   // outlive the entire scene tree (members are destroyed in reverse order).
   AnimationManager m_animations;
   Node m_root;
+  // OKARU: diseño propio igual al bloqueo de la shell (okaru_greeter_view.h); oculta el panel antiguo.
+  greeter::OkaruGreeterView m_okaru;
+  void layoutOkaru(float ox, float oy, float sw, float sh);
   GreeterWindow* m_window = nullptr;
   RenderContext* m_renderContext = nullptr;
   GreetdClient* m_greetdClient = nullptr;

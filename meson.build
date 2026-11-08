@@ -167,6 +167,7 @@ _greeter_sources = files(
   'src/greeter/greeter_preferences.cpp',
   'src/greeter/greeter_sessions.cpp',
   'src/greeter/greeter_surface.cpp',
+  'src/greeter/okaru_greeter_view.cpp',
   'src/greeter/greeter_window.cpp',
   'src/greeter/logind_resume.cpp',
   'src/greeter/power_actions.cpp',
