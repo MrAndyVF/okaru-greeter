@@ -170,7 +170,6 @@ _greeter_sources = files(
   'src/greeter/okaru_greeter_view.cpp',
   'src/greeter/greeter_window.cpp',
   'src/greeter/logind_resume.cpp',
-  'src/greeter/power_actions.cpp',
   'src/greeter/greeter.cpp',
   'src/tools/passwordless_sync_policy.cpp',
   'src/tools/passwordless_sync_policy_xml.cpp',

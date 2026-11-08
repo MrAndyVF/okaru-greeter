@@ -50,8 +50,7 @@ namespace {
         || key == "cursor"
         || key == "keyboard"
         || key == "auth"
-        || key == "idle"
-        || key == "clock";
+        || key == "idle";
   }
 
   [[nodiscard]] bool isKnownSessionKey(std::string_view key) {
@@ -64,10 +63,6 @@ namespace {
 
   [[nodiscard]] bool isKnownAppearanceKey(std::string_view key) {
     return key == "scheme"
-        || key == "password_style"
-        || key == "hide_logo"
-        || key == "power_buttons_position"
-        || key == "scheme_selector_position"
         || key == "theme_mode"
         || key == "corner_radius_scale"
         || key == "font_family"
@@ -89,15 +84,6 @@ namespace {
   }
 
   [[nodiscard]] bool isKnownIdleKey(std::string_view key) { return key == "timeout"; }
-
-  [[nodiscard]] bool isKnownClockKey(std::string_view key) {
-    return key == "enabled"
-        || key == "position"
-        || key == "time_format"
-        || key == "date_format"
-        || key == "time_font_size"
-        || key == "date_font_size";
-  }
 
   [[nodiscard]] bool isKnownCursorKey(std::string_view key) { return key == "theme" || key == "size" || key == "path"; }
 
@@ -233,16 +219,6 @@ namespace {
           }
           if (entryView == "scheme") {
             config.appearanceScheme = stringValue(entryNode);
-          } else if (entryView == "password_style") {
-            config.appearancePasswordStyle = stringValue(entryNode);
-          } else if (entryView == "hide_logo") {
-            if (const auto value = entryNode.value<bool>()) {
-              config.appearanceHideLogo = *value;
-            }
-          } else if (entryView == "power_buttons_position") {
-            config.appearancePowerButtonsPosition = stringValue(entryNode);
-          } else if (entryView == "scheme_selector_position") {
-            config.appearanceSchemeSelectorPosition = stringValue(entryNode);
           } else if (entryView == "theme_mode") {
             config.appearance.themeMode = stringValue(entryNode);
           } else if (entryView == "corner_radius_scale") {
@@ -285,44 +261,6 @@ namespace {
               }
             } else {
               kLog.warn("{}: appearance.wallpapers must be a table", path.string());
-            }
-          }
-        } else if (keyView == "clock") {
-          if (!isKnownClockKey(entryView)) {
-            warnUnknownSectionKey(path, keyView, entryView);
-            continue;
-          }
-          if (entryView == "enabled") {
-            if (const auto value = entryNode.value<bool>()) {
-              config.clockEnabled = *value;
-            } else {
-              kLog.warn("{}: invalid clock.enabled value", path.string());
-            }
-          } else if (entryView == "position") {
-            config.clockPosition = stringValue(entryNode);
-          } else if (entryView == "time_format") {
-            if (const auto value = entryNode.value<std::string>()) {
-              config.clockTimeFormat = *value;
-            } else {
-              kLog.warn("{}: invalid clock.time_format value", path.string());
-            }
-          } else if (entryView == "date_format") {
-            if (const auto value = entryNode.value<std::string>()) {
-              config.clockDateFormat = *value;
-            } else {
-              kLog.warn("{}: invalid clock.date_format value", path.string());
-            }
-          } else if (entryView == "time_font_size") {
-            if (const auto value = positiveFloatValue(entryNode)) {
-              config.clockTimeFontSize = *value;
-            } else {
-              kLog.warn("{}: invalid clock.time_font_size value", path.string());
-            }
-          } else if (entryView == "date_font_size") {
-            if (const auto value = positiveFloatValue(entryNode)) {
-              config.clockDateFontSize = *value;
-            } else {
-              kLog.warn("{}: invalid clock.date_font_size value", path.string());
             }
           }
         } else if (keyView == "output") {
@@ -463,7 +401,7 @@ namespace {
   }
 
   // Shared by greeter.toml and sync.toml: theme_mode/corner_radius_scale/font_family/palette/wallpaper(s).
-  // Callers add their own scheme/password_style/hide_logo keys on top.
+  // Callers add their own scheme key on top.
   [[nodiscard]] toml::table buildAppearanceTomlTable(const greeter::config::GreeterTomlAppearance& appearance) {
     toml::table table;
     insertString(
@@ -543,60 +481,8 @@ namespace {
           table.insert_or_assign(std::string(key), value);
         }
     );
-    insertString(
-        appearance, "password_style", config.appearancePasswordStyle,
-        [](toml::table& table, std::string_view key, const std::string& value) {
-          table.insert_or_assign(std::string(key), value);
-        }
-    );
-    if (config.appearanceHideLogo.has_value()) {
-      appearance.insert_or_assign("hide_logo", *config.appearanceHideLogo);
-    }
-    insertString(
-        appearance, "power_buttons_position", config.appearancePowerButtonsPosition,
-        [](toml::table& table, std::string_view key, const std::string& value) {
-          table.insert_or_assign(std::string(key), value);
-        }
-    );
-    insertString(
-        appearance, "scheme_selector_position", config.appearanceSchemeSelectorPosition,
-        [](toml::table& table, std::string_view key, const std::string& value) {
-          table.insert_or_assign(std::string(key), value);
-        }
-    );
     if (!appearance.empty()) {
       root.insert("appearance", std::move(appearance));
-    }
-
-    if (config.clockEnabled.has_value()
-        || config.clockPosition.has_value()
-        || config.clockTimeFormat.has_value()
-        || config.clockDateFormat.has_value()
-        || config.clockTimeFontSize.has_value()
-        || config.clockDateFontSize.has_value()) {
-      toml::table clock;
-      if (config.clockEnabled.has_value()) {
-        clock.insert_or_assign("enabled", *config.clockEnabled);
-      }
-      insertString(
-          clock, "position", config.clockPosition,
-          [](toml::table& table, std::string_view key, const std::string& value) {
-            table.insert_or_assign(std::string(key), value);
-          }
-      );
-      if (config.clockTimeFormat.has_value()) {
-        clock.insert_or_assign("time_format", *config.clockTimeFormat);
-      }
-      if (config.clockDateFormat.has_value()) {
-        clock.insert_or_assign("date_format", *config.clockDateFormat);
-      }
-      if (config.clockTimeFontSize.has_value()) {
-        clock.insert_or_assign("time_font_size", *config.clockTimeFontSize);
-      }
-      if (config.clockDateFontSize.has_value()) {
-        clock.insert_or_assign("date_font_size", *config.clockDateFontSize);
-      }
-      root.insert("clock", std::move(clock));
     }
 
     toml::table output;
@@ -1026,15 +912,13 @@ namespace greeter::config {
     out << "# output.use_synced_settings is true (default). Session power actions/menu entries are\n";
     out << "# Sync-only (sync.toml [session.power]/[[session.actions]]) and are not settable here.\n";
     out << "# [session] default, [user] default\n";
-    out << "# [appearance] scheme, password_style, hide_logo, power_buttons_position, scheme_selector_position, "
-           "theme_mode, corner_radius_scale, font_family\n";
+    out << "# [appearance] scheme, theme_mode, corner_radius_scale, font_family\n";
     out << "# [appearance.palette] full color role table, [appearance.wallpaper] path/fill_mode/fill_color\n";
     out << "# [appearance.wallpapers.<connector>] per-output wallpaper overrides\n";
     out << "# [output] name/use_synced_settings/layout/scale/scales/width/height/refresh_rate/transforms, "
            "[idle] timeout, [cursor] theme/size/path\n";
     out << "# [keyboard] layout/variant/options/numlock\n";
     out << "# [auth] allow_empty_password (bool), request_timeout (0-3600 seconds; default 60, 0 disables)\n";
-    out << "# [clock] enabled/position/time_format/date_format/time_font_size/date_font_size\n";
     out << '\n';
     out << formatToml(table);
 

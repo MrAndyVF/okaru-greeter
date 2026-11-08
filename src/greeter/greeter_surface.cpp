@@ -11,112 +11,34 @@
 #include "greeter/greeter_preferences.h"
 #include "greeter/greeter_sessions.h"
 #include "greeter/greeter_window.h"
-#include "greeter/power_actions.h"
 #include "render/core/renderer.h"
 #include "render/core/texture_manager.h"
 #include "render/render_context.h"
-#include "render/scene/image_node.h"
 #include "render/scene/input_area.h"
 #include "render/scene/input_dispatcher.h"
 #include "render/scene/node.h"
 #include "render/scene/rect_node.h"
 #include "render/scene/wallpaper_node.h"
 #include "theme/builtin_palettes.h"
-#include "time/time_format.h"
-#include "ui/controls/box.h"
-#include "ui/controls/button.h"
-#include "ui/controls/glyph.h"
 #include "ui/controls/input.h"
 #include "ui/controls/label.h"
-#include "ui/controls/scrollbar.h"
-#include "ui/controls/search_field.h"
 #include "ui/palette.h"
 #include "ui/style.h"
 
 #include <algorithm>
-#include <cctype>
 #include <cerrno>
-#include <chrono>
-#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
-#include <linux/input-event-codes.h>
-#include <nlohmann/json.hpp>
 #include <pwd.h>
 #include <sstream>
 #include <sys/types.h>
 #include <unordered_set>
-#include <wayland-client.h>
 
 namespace {
   constexpr Logger kLog("greeter-surface");
-  constexpr float kHeaderUserIconBase = 64.0f;
-  constexpr float kHeaderAvatarBorderScale = 2.0f;
 
-  Button::ButtonStateColors
-  makePaletteState(ColorRole bg, std::optional<ColorRole> border, ColorRole label, float alpha = 1.0f) {
-    return Button::ButtonStateColors{
-        colorSpecFromRole(bg, alpha),
-        border.has_value() ? colorSpecFromRole(*border, alpha) : clearColorSpec(),
-        colorSpecFromRole(label, alpha),
-    };
-  }
-
-  Button::ButtonPalette powerButtonPalette(ColorRole hover, ColorRole onHover) {
-    return Button::ButtonPalette{
-        .borderWidth = Style::borderWidth(),
-        .normal = makePaletteState(ColorRole::Surface, ColorRole::Outline, ColorRole::OnSurface, 0.78f),
-        .hover = makePaletteState(hover, std::nullopt, onHover),
-        .pressed = makePaletteState(hover, hover, onHover),
-        .disabled = makePaletteState(ColorRole::Surface, ColorRole::Outline, ColorRole::OnSurface, 0.40f),
-        .selected = std::nullopt,
-    };
-  }
-
-  constexpr std::size_t kUserDropdownMaxVisibleRows = 8;
-  constexpr std::size_t kSelectorMenuMaxVisibleRows = 8;
-  const float kUserMenuPadding = Style::spaceSm();
-  const float kUserMenuRowGap = Style::spaceXs();
-  const float kUserMenuRowIconGap = Style::spaceSm();
-
-  [[nodiscard]] bool isTextEditKey(std::uint32_t sym, std::uint32_t utf32, std::uint32_t modifiers) {
-    if (utf32 >= 0x20U && utf32 != 0x7FU) {
-      return true;
-    }
-    if (KeySymbol::isBackspace(sym)
-        || KeySymbol::isDelete(sym)
-        || KeySymbol::isLeft(sym)
-        || KeySymbol::isRight(sym)
-        || KeySymbol::isHome(sym)
-        || KeySymbol::isEnd(sym)) {
-      return true;
-    }
-    const bool ctrl = (modifiers & KeyMod::Ctrl) != 0;
-    return ctrl
-        && (sym == 'a'
-            || sym == 'A'
-            || sym == XKB_KEY_a
-            || sym == XKB_KEY_A
-            || sym == 'c'
-            || sym == 'C'
-            || sym == XKB_KEY_c
-            || sym == XKB_KEY_C
-            || sym == 'v'
-            || sym == 'V'
-            || sym == XKB_KEY_v
-            || sym == XKB_KEY_V
-            || sym == 'x'
-            || sym == 'X'
-            || sym == XKB_KEY_x
-            || sym == XKB_KEY_X
-            || sym == 'u'
-            || sym == 'U'
-            || sym == XKB_KEY_u
-            || sym == XKB_KEY_U);
-  }
-
-  void appendDummyUsers(std::vector<std::string>& users, std::vector<uid_t>& uids) {
+  void appendDummyUsers(std::vector<std::string>& users) {
     const char* dummyEnv = std::getenv("OKARU_GREETER_DUMMY_USERS");
     if (dummyEnv == nullptr) {
       return;
@@ -135,40 +57,7 @@ namespace {
       char name[32];
       std::snprintf(name, sizeof(name), "dummy-user-%02zu", i + 1);
       users.push_back(name);
-      uids.push_back(static_cast<uid_t>(60'000U + i));
     }
-  }
-
-  [[nodiscard]] bool matchesUserFilter(std::string_view user, std::string_view query) {
-    if (query.empty()) {
-      return true;
-    }
-
-    std::string loweredUser;
-    loweredUser.reserve(user.size());
-    for (const char ch : user) {
-      loweredUser.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
-    }
-
-    std::string loweredQuery;
-    loweredQuery.reserve(query.size());
-    for (const char ch : query) {
-      loweredQuery.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
-    }
-
-    return loweredUser.find(loweredQuery) != std::string::npos;
-  }
-
-  [[nodiscard]] std::vector<std::size_t>
-  filterUserIndices(const std::vector<std::string>& users, std::string_view query) {
-    std::vector<std::size_t> indices;
-    indices.reserve(users.size());
-    for (std::size_t i = 0; i < users.size(); ++i) {
-      if (matchesUserFilter(users[i], query)) {
-        indices.push_back(i);
-      }
-    }
-    return indices;
   }
 
   bool parseColorWallpaperPath(std::string_view path, Color& out) {
@@ -184,13 +73,8 @@ namespace {
 GreeterSurface::GreeterSurface() = default;
 
 GreeterSurface::~GreeterSurface() {
-  if (m_renderContext != nullptr) {
-    if (m_brandLogoTexture.id != 0) {
-      m_renderContext->textureManager().unload(m_brandLogoTexture);
-    }
-    if (m_wallpaperTexture.id != 0) {
-      m_renderContext->textureManager().unload(m_wallpaperTexture);
-    }
+  if (m_renderContext != nullptr && m_wallpaperTexture.id != 0) {
+    m_renderContext->textureManager().unload(m_wallpaperTexture);
   }
 }
 
@@ -227,102 +111,7 @@ void GreeterSurface::initialize(RenderContext* context) {
   m_backdrop->setZIndex(1);
   m_root.addChild(std::move(backdrop));
 
-  auto bottomLogo = std::make_unique<ImageNode>();
-  bottomLogo->setFitMode(ImageFitMode::Contain);
-  bottomLogo->setHitTestVisible(false);
-  bottomLogo->setZIndex(2);
-  m_bottomBrandLogo = bottomLogo.get();
-  m_root.addChild(std::move(bottomLogo));
-
-  auto clockTime = std::make_unique<Label>();
-  clockTime->setFontSize(Style::scaled(m_clockTimeFontSize));
-  clockTime->setTextAlign(TextAlign::Center);
-  clockTime->setColor(colorForRole(ColorRole::OnSurface));
-  clockTime->setVisible(false);
-  m_clockTimeLabel = clockTime.get();
-  m_clockTimeLabel->setZIndex(5);
-  m_root.addChild(std::move(clockTime));
-
-  auto clockDate = std::make_unique<Label>();
-  clockDate->setFontSize(Style::scaled(m_clockDateFontSize));
-  clockDate->setTextAlign(TextAlign::Center);
-  clockDate->setColor(colorForRole(ColorRole::OnSurfaceVariant));
-  clockDate->setVisible(false);
-  m_clockDateLabel = clockDate.get();
-  m_clockDateLabel->setZIndex(5);
-  m_root.addChild(std::move(clockDate));
-
-  auto formSubtitle = std::make_unique<Label>();
-  formSubtitle->setFontSize(Style::fontSizeTitle());
-  formSubtitle->setBold(true);
-  formSubtitle->setColor(colorForRole(ColorRole::OnSurfaceVariant));
-  m_formSubtitleLabel = formSubtitle.get();
-  m_formSubtitleLabel->setZIndex(6);
-  m_root.addChild(std::move(formSubtitle));
-
-  auto brandPane = std::make_unique<RectNode>();
-  brandPane->setStyle(
-      RoundedRectStyle{
-          .fill = colorForRole(ColorRole::Surface, 0.95f),
-          .fillMode = FillMode::Solid,
-      }
-  );
-  m_brandPane = brandPane.get();
-  m_brandPane->setZIndex(5);
-  m_root.addChild(std::move(brandPane));
-
-  auto headerGlyph = std::make_unique<Glyph>();
-  headerGlyph->setGlyph("user");
-  headerGlyph->setGlyphSize(Style::scaled(kHeaderUserIconBase));
-  headerGlyph->setColor(colorForRole(ColorRole::OnSurface));
-  headerGlyph->setHitTestVisible(false);
-  m_headerUserGlyph = headerGlyph.get();
-  m_headerUserGlyph->setZIndex(7);
-  m_root.addChild(std::move(headerGlyph));
-
-  auto headerAvatar = std::make_unique<ImageNode>();
-  headerAvatar->setFitMode(ImageFitMode::Cover);
-  headerAvatar->setHitTestVisible(false);
-  headerAvatar->setVisible(false);
-  m_headerUserAvatar = headerAvatar.get();
-  m_headerUserAvatar->setZIndex(7);
-  m_root.addChild(std::move(headerAvatar));
-
-  auto brandTitle = std::make_unique<Label>();
-  brandTitle->setText("");
-  brandTitle->setFontSize(30.0f);
-  brandTitle->setBold(true);
-  brandTitle->setColor(colorForRole(ColorRole::OnSurface));
-  m_brandTitleLabel = brandTitle.get();
-  m_brandTitleLabel->setZIndex(7);
-  m_root.addChild(std::move(brandTitle));
-
-  auto brandSubtitle = std::make_unique<Label>();
-  brandSubtitle->setText("");
-  brandSubtitle->setFontSize(12.0f);
-  brandSubtitle->setColor(colorForRole(ColorRole::OnSurfaceVariant));
-  m_brandSubtitleLabel = brandSubtitle.get();
-  m_brandSubtitleLabel->setZIndex(7);
-  m_root.addChild(std::move(brandSubtitle));
-
-  auto divider = std::make_unique<RectNode>();
-  divider->setStyle(
-      RoundedRectStyle{
-          .fill = colorForRole(ColorRole::Outline, 0.90f),
-          .fillMode = FillMode::Solid,
-          .radius = 0.0f,
-      }
-  );
-  m_panelDivider = divider.get();
-  m_root.addChild(std::move(divider));
-
-  auto panel = std::make_unique<Box>();
-  m_loginPanel = panel.get();
-  m_loginPanel->setZIndex(1);
-  m_root.addChild(std::move(panel));
-
   auto pwField = std::make_unique<Input>();
-  pwField->setPlaceholder("Type password");
   pwField->setPasswordMode(true);
   pwField->setControlHeight(Style::controlHeight());
   pwField->setOnChange([this](const std::string& value) { m_password = value; });
@@ -330,204 +119,6 @@ void GreeterSurface::initialize(RenderContext* context) {
   m_passwordField = pwField.get();
   m_passwordField->setZIndex(6);
   m_root.addChild(std::move(pwField));
-
-  auto userBox = std::make_unique<Box>();
-  m_userSelectBox = userBox.get();
-  m_userSelectBox->setZIndex(6);
-  m_root.addChild(std::move(userBox));
-
-  auto userIcon = std::make_unique<Glyph>();
-  userIcon->setGlyph("user");
-  userIcon->setGlyphSize(Style::fontSizeBody());
-  userIcon->setColor(colorForRole(ColorRole::OnSurfaceVariant));
-  userIcon->setHitTestVisible(false);
-  m_userSelectIcon = userIcon.get();
-  m_userSelectIcon->setZIndex(6);
-  m_root.addChild(std::move(userIcon));
-
-  auto userLabel = std::make_unique<Label>();
-  userLabel->setFontSize(Style::fontSizeBody());
-  m_userSelectLabel = userLabel.get();
-  m_userSelectLabel->setZIndex(6);
-  m_root.addChild(std::move(userLabel));
-
-  auto userGlyph = std::make_unique<Glyph>();
-  userGlyph->setGlyph("chevron-down");
-  userGlyph->setGlyphSize(14.0f);
-  m_userSelectGlyph = userGlyph.get();
-  m_userSelectGlyph->setZIndex(6);
-  m_root.addChild(std::move(userGlyph));
-
-  auto userArea = std::make_unique<InputArea>();
-  userArea->setFocusable(true);
-  userArea->setOnPress([this](const InputArea::PointerData& data) {
-    if (!data.pressed || data.button != BTN_LEFT || m_userMenuOpen) {
-      return;
-    }
-    openUserMenu();
-  });
-  m_userSelectArea = userArea.get();
-  m_userSelectArea->setZIndex(7);
-  m_userSelectArea->setOnFocusChange([this](bool) {
-    syncPanelUserChrome();
-    requestRedraw();
-  });
-  m_root.addChild(std::move(userArea));
-
-  auto userSearch = std::make_unique<SearchField>();
-  userSearch->setPlaceholder("Search users…");
-  userSearch->setFontSize(Style::fontSizeBody());
-  userSearch->setVisible(false);
-  userSearch->setOnChange([this](const std::string& value) {
-    if (value == m_userMenuSearchQuery) {
-      return;
-    }
-    m_userMenuSearchQuery = value;
-    m_userMenuScrollOffset = 0;
-    refreshUserMenuRows();
-  });
-  userSearch->setOnKeyDown([this](
-                               std::uint32_t sym, std::uint32_t /*utf32*/, std::uint32_t /*modifiers*/, bool preedit
-                           ) { return handleUserMenuSearchKey(sym, preedit); });
-  m_userMenuSearchField = userSearch.get();
-  m_userMenuSearchField->setZIndex(8);
-  m_root.addChild(std::move(userSearch));
-
-  auto sessionBox = std::make_unique<Box>();
-  m_sessionSelectBox = sessionBox.get();
-  m_sessionSelectBox->setZIndex(6);
-  m_root.addChild(std::move(sessionBox));
-
-  auto sessionIcon = std::make_unique<Glyph>();
-  sessionIcon->setGlyph("device-desktop");
-  sessionIcon->setGlyphSize(Style::fontSizeBody());
-  sessionIcon->setColor(colorForRole(ColorRole::OnSurfaceVariant));
-  sessionIcon->setHitTestVisible(false);
-  m_sessionSelectIcon = sessionIcon.get();
-  m_sessionSelectIcon->setZIndex(6);
-  m_root.addChild(std::move(sessionIcon));
-
-  auto sessionLabel = std::make_unique<Label>();
-  sessionLabel->setFontSize(Style::fontSizeBody());
-  m_sessionSelectLabel = sessionLabel.get();
-  m_sessionSelectLabel->setZIndex(6);
-  m_root.addChild(std::move(sessionLabel));
-
-  auto sessionGlyph = std::make_unique<Glyph>();
-  sessionGlyph->setGlyph("chevron-down");
-  sessionGlyph->setGlyphSize(14.0f);
-  m_sessionSelectGlyph = sessionGlyph.get();
-  m_sessionSelectGlyph->setZIndex(6);
-  m_root.addChild(std::move(sessionGlyph));
-
-  auto sessionArea = std::make_unique<InputArea>();
-  sessionArea->setFocusable(true);
-  sessionArea->setOnClick([this](const InputArea::PointerData& data) {
-    if (data.button != BTN_LEFT) {
-      return;
-    }
-    toggleSessionMenu();
-  });
-  sessionArea->setOnEnter([this](const InputArea::PointerData&) {
-    syncPanelSessionChrome();
-    requestRedraw();
-  });
-  sessionArea->setOnLeave([this]() {
-    syncPanelSessionChrome();
-    requestRedraw();
-  });
-  m_sessionSelectArea = sessionArea.get();
-  m_sessionSelectArea->setZIndex(7);
-  m_sessionSelectArea->setOnFocusChange([this](bool) {
-    syncPanelSessionChrome();
-    requestRedraw();
-  });
-  m_root.addChild(std::move(sessionArea));
-
-  auto schemeBox = std::make_unique<Box>();
-  m_schemeSelectBox = schemeBox.get();
-  m_schemeSelectBox->setZIndex(6);
-  m_root.addChild(std::move(schemeBox));
-
-  auto schemeIcon = std::make_unique<Glyph>();
-  schemeIcon->setGlyph("palette");
-  schemeIcon->setGlyphSize(Style::fontSizeBody());
-  schemeIcon->setColor(colorForRole(ColorRole::OnSurfaceVariant));
-  schemeIcon->setHitTestVisible(false);
-  m_schemeSelectIcon = schemeIcon.get();
-  m_schemeSelectIcon->setZIndex(6);
-  m_root.addChild(std::move(schemeIcon));
-
-  auto schemeLabel = std::make_unique<Label>();
-  schemeLabel->setFontSize(Style::fontSizeBody());
-  m_schemeSelectLabel = schemeLabel.get();
-  m_schemeSelectLabel->setZIndex(6);
-  m_root.addChild(std::move(schemeLabel));
-
-  auto schemeGlyph = std::make_unique<Glyph>();
-  schemeGlyph->setGlyph("chevron-down");
-  schemeGlyph->setGlyphSize(14.0f);
-  m_schemeSelectGlyph = schemeGlyph.get();
-  m_schemeSelectGlyph->setZIndex(6);
-  m_root.addChild(std::move(schemeGlyph));
-
-  auto schemeArea = std::make_unique<InputArea>();
-  schemeArea->setFocusable(true);
-  schemeArea->setOnClick([this](const InputArea::PointerData& data) {
-    if (data.button != BTN_LEFT) {
-      return;
-    }
-    toggleSchemeMenu();
-  });
-  m_schemeSelectArea = schemeArea.get();
-  m_schemeSelectArea->setZIndex(7);
-  m_schemeSelectArea->setOnFocusChange([this](bool) {
-    applySelectorBoxStyle(m_schemeSelectBox, m_schemeSelectArea);
-    requestRedraw();
-  });
-  m_root.addChild(std::move(schemeArea));
-
-  auto loginBtn = std::make_unique<Button>();
-  loginBtn->setGlyph("arrow-right");
-  loginBtn->setGlyphSize(16.0f);
-  loginBtn->setVariant(ButtonVariant::Primary);
-  loginBtn->setContentAlign(ButtonContentAlign::Center);
-  loginBtn->setOnClick([this]() { tryAuthenticate(); });
-  m_loginButton = loginBtn.get();
-  m_loginButton->setZIndex(6);
-  m_loginButton->setAnimationManager(nullptr);
-  m_root.addChild(std::move(loginBtn));
-
-  auto backBtn = std::make_unique<Button>();
-  backBtn->setGlyph("arrow-left");
-  backBtn->setGlyphSize(16.0f);
-  backBtn->setCustomPalette(
-      Button::ButtonPalette{
-          .borderWidth = Style::borderWidth(),
-          .normal = makePaletteState(ColorRole::SurfaceVariant, ColorRole::Outline, ColorRole::OnSurface),
-          .hover = makePaletteState(ColorRole::Secondary, std::nullopt, ColorRole::OnSecondary),
-          .pressed = makePaletteState(ColorRole::Primary, ColorRole::Primary, ColorRole::OnPrimary),
-          .disabled = makePaletteState(ColorRole::SurfaceVariant, ColorRole::Outline, ColorRole::OnSurface, 0.55f),
-          .selected = std::nullopt,
-      }
-  );
-  backBtn->setContentAlign(ButtonContentAlign::Center);
-  backBtn->setOnPress([this](float /*localX*/, float /*localY*/, bool pressed) {
-    if (pressed) {
-      runBackAction();
-    }
-  });
-  m_backButton = backBtn.get();
-  m_backButton->setZIndex(6);
-  m_backButton->setAnimationManager(nullptr);
-  m_root.addChild(std::move(backBtn));
-
-  auto status = std::make_unique<Label>();
-  status->setFontSize(Style::fontSizeCaption());
-  status->setColor(colorForRole(ColorRole::OnSurfaceVariant));
-  m_statusLabel = status.get();
-  m_statusLabel->setZIndex(6);
-  m_root.addChild(std::move(status));
 
   auto configErrorBanner = std::make_unique<RectNode>();
   configErrorBanner->setHitTestVisible(false);
@@ -555,56 +146,7 @@ void GreeterSurface::initialize(RenderContext* context) {
   m_configErrorLabel->setZIndex(10);
   m_root.addChild(std::move(configError));
 
-  m_canRebootToFirmware = power::canRebootToFirmwareSetup();
-
-  const auto makePowerButton =
-      [this](std::string_view icon, ColorRole hover, ColorRole onHover, std::function<void()> action) -> Button* {
-    auto btn = std::make_unique<Button>();
-    btn->setGlyph(icon);
-    btn->setGlyphSize(18.0f);
-    btn->setContentAlign(ButtonContentAlign::Center);
-    btn->setCustomPalette(powerButtonPalette(hover, onHover));
-    btn->setOnClick(std::move(action));
-    btn->setZIndex(8);
-    Button* ptr = btn.get();
-    m_root.addChild(std::move(btn));
-    return ptr;
-  };
-
-  m_shutdownButton = makePowerButton("power", ColorRole::Error, ColorRole::OnError, []() { power::powerOff(); });
-  m_shutdownButton->setTooltip("Shut down");
-  m_rebootButton = makePowerButton("reload", ColorRole::Secondary, ColorRole::OnSecondary, []() { power::reboot(); });
-  m_rebootButton->setTooltip("Restart");
-  if (m_canRebootToFirmware) {
-    m_firmwareButton =
-        makePowerButton("cpu", ColorRole::Secondary, ColorRole::OnSecondary, []() { power::rebootToFirmwareSetup(); });
-    m_firmwareButton->setTooltip("Restart to UEFI firmware setup");
-  }
-
-  const auto applySyncedPowerButton = [](Button* button, std::string_view action, std::string_view fallbackTooltip) {
-    if (button == nullptr) {
-      return;
-    }
-    button->setVisible(power::hasSyncedAction(action));
-    if (const auto glyph = power::syncedActionGlyph(action)) {
-      button->setGlyph(*glyph);
-    }
-    if (const auto label = power::syncedActionLabel(action)) {
-      button->setTooltip(*label);
-    } else {
-      button->setTooltip(fallbackTooltip);
-    }
-  };
-  applySyncedPowerButton(m_shutdownButton, "shutdown", "Shut down");
-  applySyncedPowerButton(m_rebootButton, "reboot", "Restart");
-
   m_root.setAnimationManager(&m_animations);
-  // Keep state changes immediate to avoid hover flicker.
-  for (Button* btn : {m_shutdownButton, m_rebootButton, m_firmwareButton}) {
-    if (btn != nullptr) {
-      btn->setAnimationManager(nullptr);
-    }
-  }
   m_inputDispatcher.setSceneRoot(&m_root);
   m_inputDispatcher.setCursorShapeCallback([](std::uint32_t serial, std::uint32_t shape) {
     (void)serial;
@@ -615,7 +157,6 @@ void GreeterSurface::initialize(RenderContext* context) {
   loadSessions();
   buildSchemeNames();
   loadPreferences();
-  (void)updateClock();
   if (m_selectedScheme >= m_schemeNames.size()) {
     if (const auto fallback = findSchemeIndex("OKARU")) {
       m_selectedScheme = *fallback;
@@ -624,7 +165,6 @@ void GreeterSurface::initialize(RenderContext* context) {
     }
   }
   applyScheme(m_selectedScheme);
-  refreshSelectionLabels();
   applyInitialUserSelection();
 
   if (const auto& diagnostics = greeter::config::configDiagnostics(); !diagnostics.empty()) {
@@ -651,33 +191,11 @@ void GreeterSurface::initialize(RenderContext* context) {
   m_okaru.adoptPasswordField(m_passwordField);
   m_okaru.setOnNextUser([this] {
     if (m_users.size() > 1) {
-      enterPasswordStep((m_selectedUser + 1) % m_users.size());
+      selectUser((m_selectedUser + 1) % m_users.size());
     }
   });
-  const auto stepSession = [this](std::size_t delta) {
-    if (m_sessions.size() > 1) {
-      selectSession((m_selectedSession + delta) % m_sessions.size());
-      if (m_passwordField != nullptr && m_passwordField->inputArea() != nullptr) {
-        m_inputDispatcher.setFocus(m_passwordField->inputArea());
-      }
-    }
-  };
-  m_okaru.setOnNextSession([stepSession] { stepSession(1); });
-  m_okaru.setOnPreviousSession([this, stepSession] { stepSession(m_sessions.size() - 1); });
-
-  if (!m_hideLogo) {
-    const auto logoPath = paths::assetPath("okaru.svg");
-    m_brandLogoTexture = m_renderContext->textureManager().loadFromFile(logoPath.string(), 1024, true);
-    if (m_bottomBrandLogo != nullptr && m_brandLogoTexture.id != 0) {
-      m_bottomBrandLogo->setTextureId(m_brandLogoTexture.id);
-      m_bottomBrandLogo->setTextureSize(m_brandLogoTexture.width, m_brandLogoTexture.height);
-      // Keep the multicolor brand artwork intact. Palette tinting, especially
-      // with a light theme's dark on-surface color, crushes its colors.
-      m_bottomBrandLogo->setTint(rgba(1.0f, 1.0f, 1.0f, 1.0f));
-    } else {
-      kLog.warn("failed loading logo texture from {}", logoPath.string());
-    }
-  }
+  m_okaru.setOnNextSession([this] { stepSession(1); });
+  m_okaru.setOnPreviousSession([this] { stepSession(m_sessions.size() - 1); });
 
   requestLayout();
 }
@@ -685,61 +203,23 @@ void GreeterSurface::initialize(RenderContext* context) {
 void GreeterSurface::applyInitialUserSelection() {
   const auto initialUser = greeter::resolveInitialUserName(greeter::loadGreeterPreferences());
   if (initialUser.has_value()) {
-    for (std::size_t i = 0; i < m_users.size(); ++i) {
-      if (m_users[i] == *initialUser) {
-        m_selectedUser = i;
-        setUsername(m_users[i]);
-        m_passwordVisible = true;
-        m_password.clear();
-        if (m_passwordField != nullptr) {
-          m_passwordField->setValue("");
-        }
-        return;
-      }
+    const auto it = std::ranges::find(m_users, *initialUser);
+    if (it != m_users.end()) {
+      m_selectedUser = static_cast<std::size_t>(std::distance(m_users.begin(), it));
+    } else {
+      // Domain / FreeIPA users may be absent from the list until cached; still
+      // honor --user / [user].default so PAM can resolve them by name.
+      m_users.push_back(*initialUser);
+      m_selectedUser = m_users.size() - 1;
+      kLog.info("default_user '{}' not in user list; using it anyway", *initialUser);
     }
-
-    // Domain / FreeIPA users may be absent from the picker until cached; still
-    // honor --user / [user].default so PAM can resolve them by name.
-    m_users.push_back(*initialUser);
-    m_userUids.push_back(0);
-    m_userIconPaths.push_back("");
-    m_selectedUser = m_users.size() - 1;
-    setUsername(*initialUser);
-    m_passwordVisible = true;
-    m_password.clear();
-    if (m_passwordField != nullptr) {
-      m_passwordField->setValue("");
-    }
-    kLog.info("default_user '{}' not in user list; opening password step anyway", *initialUser);
-    return;
-  }
-
-  if (m_users.size() == 1) {
+  } else {
     m_selectedUser = 0;
-    setUsername(m_users.front());
-    m_passwordVisible = true;
-    m_password.clear();
-    if (m_passwordField != nullptr) {
-      m_passwordField->setValue("");
-    }
-    return;
   }
-
-  // OKARU: siempre directo a la contraseña; con varios usuarios, clic en el nombre para cambiar.
-  if (!m_users.empty()) {
-    m_selectedUser = 0;
-    setUsername(m_users.front());
-    m_passwordVisible = true;
-    m_password.clear();
-    if (m_passwordField != nullptr) {
-      m_passwordField->setValue("");
-    }
-    return;
-  }
-  m_passwordVisible = false;
+  setUsername(m_users[m_selectedUser]);
+  m_password.clear();
+  m_passwordField->setValue("");
 }
-
-bool GreeterSurface::showsUserDropdown() const noexcept { return m_users.size() > 1; }
 
 void GreeterSurface::setKeyboardOwner(const bool owner) noexcept {
   m_isKeyboardOwner = owner;
@@ -748,33 +228,16 @@ void GreeterSurface::setKeyboardOwner(const bool owner) noexcept {
   }
 }
 
-bool GreeterSurface::ownsInputArea(const InputArea* area) const {
-  if (area == nullptr) {
-    return false;
+void GreeterSurface::focusPasswordField() {
+  if (m_passwordField != nullptr && m_passwordField->inputArea() != nullptr) {
+    m_inputDispatcher.setFocus(m_passwordField->inputArea());
   }
-  for (const Node* node = area; node != nullptr; node = node->parent()) {
-    if (node == &m_root) {
-      return true;
-    }
-  }
-  return false;
 }
 
 void GreeterSurface::reconcileKeyboardFocus() {
-  InputArea* focused = InputArea::getFocused();
-  if (focused != nullptr && ownsInputArea(focused)) {
-    syncFocusIndexFromFocused();
-    return;
-  }
-
-  if (m_passwordVisible && m_passwordField != nullptr && m_passwordField->inputArea() != nullptr) {
-    m_inputDispatcher.setFocus(m_passwordField->inputArea());
-    syncFocusIndexFromFocused();
-    return;
-  }
-
-  if (!m_focusRing.empty()) {
-    setFocusIndex(defaultFocusIndex());
+  // El campo de contraseña es lo único con foco de teclado en esta vista.
+  if (m_passwordField != nullptr && InputArea::getFocused() != m_passwordField->inputArea()) {
+    focusPasswordField();
   }
 }
 
@@ -818,7 +281,6 @@ void GreeterSurface::mirrorStateFrom(const GreeterSurface& other) {
   m_selectedUser = other.m_selectedUser;
   m_selectedSession = other.m_selectedSession;
   m_selectedScheme = other.m_selectedScheme;
-  m_passwordVisible = other.m_passwordVisible;
   m_username = other.m_username;
   m_status = other.m_status;
   m_statusIsError = other.m_statusIsError;
@@ -827,8 +289,6 @@ void GreeterSurface::mirrorStateFrom(const GreeterSurface& other) {
     applyScheme(m_selectedScheme);
   }
 
-  closeMenus();
-  refreshSelectionLabels();
   commitImmediateFrame(true);
 }
 
@@ -868,25 +328,6 @@ void GreeterSurface::onPointerEvent(float x, float y, std::uint32_t button, bool
   if (!pointerInViewport(x, y)) {
     return;
   }
-  if (pressed && button == BTN_LEFT && (m_userMenuOpen || m_sessionMenuOpen || m_schemeMenuOpen)) {
-    const auto inRect = [x, y](const Node* node) {
-      if (node == nullptr) {
-        return false;
-      }
-      return x >= node->x() && y >= node->y() && x <= node->x() + node->width() && y <= node->y() + node->height();
-    };
-
-    const bool onUserAnchor = inRect(m_userSelectBox);
-    const bool onSessionAnchor = inRect(m_sessionSelectBox);
-    const bool onSchemeAnchor = inRect(m_schemeSelectBox);
-    const bool onUserMenu = inRect(m_userMenuPanel);
-    const bool onSessionMenu = inRect(m_sessionMenuPanel);
-    const bool onSchemeMenu = inRect(m_schemeMenuPanel);
-    if (!onUserAnchor && !onSessionAnchor && !onSchemeAnchor && !onUserMenu && !onSessionMenu && !onSchemeMenu) {
-      closeMenus();
-    }
-  }
-
   m_inInputDispatch = true;
   m_inputDispatcher.pointerButton(x, y, button, pressed);
   m_inInputDispatch = false;
@@ -912,28 +353,6 @@ void GreeterSurface::onPointerMotion(float x, float y) {
       requestLayout();
     else
       requestRedraw();
-  }
-}
-
-void GreeterSurface::onPointerAxis(float x, float y, std::uint32_t axis, float axisLines) {
-  if (!pointerInViewport(x, y) || axisLines == 0.0f || axis != WL_POINTER_AXIS_VERTICAL_SCROLL) {
-    return;
-  }
-  if (m_userMenuOpen && pointerInUserMenuScrollArea(x, y)) {
-    scrollUserMenu(static_cast<int>(std::round(axisLines)));
-  } else if (activeMenuScroll() != nullptr) {
-    const Box* panel = m_sessionMenuOpen ? m_sessionMenuPanel : m_schemeMenuPanel;
-    if (panel == nullptr
-        || x < panel->x()
-        || x > panel->x() + panel->width()
-        || y < panel->y()
-        || y > panel->y() + panel->height()) {
-      return;
-    }
-    m_menuScrollRemainder += axisLines;
-    const int delta = static_cast<int>(m_menuScrollRemainder);
-    m_menuScrollRemainder -= static_cast<float>(delta);
-    scrollSelectorMenu(delta);
   }
 }
 
@@ -1043,71 +462,35 @@ void GreeterSurface::prepareFrame(std::uint32_t width, std::uint32_t height, boo
   }
 }
 
-bool GreeterSurface::updateClock() {
-  if (m_clockTimeLabel == nullptr || m_clockDateLabel == nullptr) {
-    return false;
-  }
-
-  const auto now = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
-  const std::int64_t second = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
-  if (m_lastClockSecond.has_value() && *m_lastClockSecond == second) {
-    return false;
-  }
-  m_lastClockSecond = second;
-
-  const std::string time = m_clockEnabled ? formatLocalUnixTime(second, m_clockTimeFormat) : std::string{};
-  const std::string date = m_clockEnabled ? formatLocalUnixTime(second, m_clockDateFormat) : std::string{};
-  const bool timeChanged = m_clockTimeLabel->setText(time);
-  const bool dateChanged = m_clockDateLabel->setText(date);
-  return timeChanged || dateChanged;
-}
-
-void GreeterSurface::syncScaledTypography() {
-  if (m_headerUserGlyph != nullptr) {
-    m_headerUserGlyph->setGlyphSize(Style::scaled(kHeaderUserIconBase));
-  }
-  m_formSubtitleLabel->setFontSize(Style::fontSizeTitle());
-  m_brandTitleLabel->setFontSize(Style::scaled(30.0f));
-  m_brandSubtitleLabel->setFontSize(Style::fontSizeCaption());
-  m_passwordField->setControlHeight(Style::controlHeight());
-  m_userSelectLabel->setFontSize(Style::fontSizeBody());
-  m_userSelectGlyph->setGlyphSize(Style::fontSizeBody());
-  m_sessionSelectLabel->setFontSize(Style::fontSizeBody());
-  m_sessionSelectGlyph->setGlyphSize(Style::fontSizeBody());
-  m_schemeSelectLabel->setFontSize(Style::fontSizeBody());
-  m_schemeSelectGlyph->setGlyphSize(Style::fontSizeBody());
-  m_clockTimeLabel->setFontSize(Style::scaled(m_clockTimeFontSize));
-  m_clockDateLabel->setFontSize(Style::scaled(m_clockDateFontSize));
-  m_loginButton->setGlyphSize(Style::fontSizeTitle());
-  m_backButton->setGlyphSize(Style::fontSizeTitle());
-  m_statusLabel->setFontSize(Style::fontSizeCaption());
-}
-
-void GreeterSurface::enterPasswordStep(std::size_t userIndex) {
+void GreeterSurface::selectUser(std::size_t userIndex) {
   if (userIndex >= m_users.size()) {
     return;
   }
   m_selectedUser = userIndex;
   setUsername(m_users[userIndex]);
-  m_userMenuOpen = false;
-  m_userMenuSearchQuery.clear();
-  m_passwordVisible = true;
   m_passwordField->setValue("");
   m_password.clear();
-  if (m_passwordField->inputArea() != nullptr) {
-    m_inputDispatcher.setFocus(m_passwordField->inputArea());
+  focusPasswordField();
+  notifyStateChanged();
+  commitImmediateFrame(true);
+}
+
+void GreeterSurface::stepSession(std::size_t delta) {
+  if (m_sessions.size() < 2) {
+    return;
   }
-  refreshSelectionLabels();
+  m_selectedSession = (m_selectedSession + delta) % m_sessions.size();
+  savePreferences();
+  focusPasswordField();
   notifyStateChanged();
   commitImmediateFrame(true);
 }
 
 void GreeterSurface::layoutScene(std::uint32_t width, std::uint32_t height) {
   auto* renderer = m_renderContext;
-  if (!renderer)
+  if (!renderer) {
     return;
-
-  syncScaledTypography();
+  }
 
   const float fullW = static_cast<float>(width);
   const float fullH = static_cast<float>(height);
@@ -1151,92 +534,6 @@ void GreeterSurface::layoutScene(std::uint32_t width, std::uint32_t height) {
     m_backdrop->setVisible(true);
   }
 
-  if (m_bottomBrandLogo != nullptr) {
-    const bool hasBrandLogo = m_brandLogoTexture.id != 0 && !m_hideLogo;
-    m_bottomBrandLogo->setVisible(hasBrandLogo);
-    if (hasBrandLogo) {
-      const float logoSize = Style::scaled(64.0f);
-      m_bottomBrandLogo->setSize(logoSize, logoSize);
-      m_bottomBrandLogo->setPosition(ox + std::round((sw - logoSize) * 0.5f), oy + sh - logoSize - Style::spaceLg());
-      m_bottomBrandLogo->setTint(rgba(1.0f, 1.0f, 1.0f, 1.0f));
-    }
-  }
-
-  const float panelWidth = std::clamp(sw * 0.32f, Style::scaled(440.0f), Style::scaled(540.0f));
-  const float rowHeight = Style::controlHeightLg();
-  const float rowGap = Style::spaceSm();
-  const float panelPadding = Style::spaceLg();
-
-  const float userCount = static_cast<float>(m_users.size());
-  const float glyphScale = std::clamp(1.0f - (userCount - 2.0f) * 0.08f, 0.75f, 1.0f);
-  const float headerGlyphSize = Style::scaled(kHeaderUserIconBase) * glyphScale;
-
-  if (m_passwordVisible && !m_users.empty() && m_selectedUser < m_users.size()) {
-    m_formSubtitleLabel->setText(m_users[m_selectedUser]);
-    m_formSubtitleLabel->setVisible(true);
-  } else {
-    m_formSubtitleLabel->setVisible(false);
-  }
-  if (m_formSubtitleLabel->visible()) {
-    m_formSubtitleLabel->measure(*renderer);
-  }
-  m_statusLabel->measure(*renderer);
-
-  const float subtitleGap = m_formSubtitleLabel->visible() ? (6.0f + m_formSubtitleLabel->height()) : 0.0f;
-  const float headerTopPadding = Style::spaceSm();
-  const float headerGlyphBlock = headerGlyphSize + Style::spaceMd();
-  const float headerToContentGap = Style::spaceLg();
-  const float headerBlockHeight = headerTopPadding + headerGlyphBlock + subtitleGap + headerToContentGap;
-
-  const float sessionRowH = rowHeight;
-  const float sessionRowGap = rowGap;
-
-  const float userBlockHeight = showsUserDropdown() ? rowHeight : 0.0f;
-  const float userPickerContentHeight = userBlockHeight + sessionRowGap + sessionRowH;
-  const float passwordContentHeight = Style::controlHeight() + sessionRowGap + sessionRowH;
-  const float contentBlockHeight = m_passwordVisible ? passwordContentHeight : userPickerContentHeight;
-
-  const bool hasStatus = !m_status.empty();
-  const std::string actualStatus = m_status;
-  m_statusLabel->setText("Xy");
-  m_statusLabel->measure(*renderer);
-  const float statusLineHeight = m_statusLabel->height();
-  m_statusLabel->setText(actualStatus);
-  m_statusLabel->measure(*renderer);
-
-  const float statusGap = Style::spaceSm();
-  const float statusBlockHeight = hasStatus ? (statusGap + statusLineHeight) : 0.0f;
-  const float panelTopPadding = panelPadding;
-  const float panelBottomPadding = panelPadding;
-  const float panelInnerHeight = headerBlockHeight + contentBlockHeight + statusBlockHeight;
-  const float minPanelHeight = 0.0f;
-  const float maxPanelHeight = std::max(minPanelHeight, sh - panelPadding * 2.0f);
-  const float panelHeight =
-      std::clamp(panelInnerHeight + panelTopPadding + panelBottomPadding, minPanelHeight, maxPanelHeight);
-  const float panelX = ox + std::round((sw - panelWidth) * 0.5f);
-  const float panelY = oy + std::round((sh - panelHeight) * 0.5f);
-  const float contentLeft = panelX + panelPadding;
-  const float contentWidth = panelWidth - panelPadding * 2.0f;
-
-  float headerY = panelY + panelTopPadding + headerTopPadding;
-
-  if (m_brandPane != nullptr) {
-    static_cast<RectNode*>(m_brandPane)->setVisible(false);
-  }
-
-  // Refresh text colors each layout for theme/scheme changes.
-  m_formSubtitleLabel->setColor(colorForRole(ColorRole::OnSurface));
-  if (m_brandTitleLabel != nullptr) {
-    m_brandTitleLabel->setColor(colorForRole(ColorRole::OnSurface));
-  }
-  if (m_brandSubtitleLabel != nullptr) {
-    m_brandSubtitleLabel->setColor(colorForRole(ColorRole::OnSurfaceVariant));
-  }
-  if (m_statusLabel != nullptr) {
-    m_statusLabel->setColor(
-        m_statusIsError ? colorForRole(ColorRole::Error) : colorForRole(ColorRole::OnSurfaceVariant)
-    );
-  }
   if (m_configErrorBanner != nullptr && m_configErrorBanner->visible()) {
     constexpr float kBannerPadding = 14.0f;
     constexpr float kBannerMaxWidth = 960.0f;
@@ -1270,206 +567,14 @@ void GreeterSurface::layoutScene(std::uint32_t width, std::uint32_t height) {
     m_configErrorLabel->setPosition(bannerX + padding, bannerY + padding + m_configErrorHeading->height() + gap);
   }
 
-  syncHeaderUserAvatar(*renderer, headerGlyphSize, panelX, panelWidth, headerY);
-  headerY += headerGlyphBlock;
-
-  if (m_formSubtitleLabel->visible()) {
-    m_formSubtitleLabel->setPosition(
-        (std::round(panelX + (panelWidth - m_formSubtitleLabel->width()) * 0.5f)), (headerY)
-    );
-    headerY += subtitleGap;
-  }
-  const float contentTop = panelY + panelTopPadding + headerBlockHeight;
-
-  if (m_panelDivider != nullptr)
-    m_panelDivider->setVisible(false);
-
-  m_loginPanel->setPosition((panelX), (panelY));
-  m_loginPanel->setSize(panelWidth, panelHeight);
-  m_loginPanel->setStyle(
-      RoundedRectStyle{
-          .fill = colorForRole(ColorRole::SurfaceVariant),
-          .border = colorForRole(ColorRole::Outline),
-          .fillMode = FillMode::Solid,
-          .radius = Style::scaledRadiusXl(),
-          .softness = 1.0f,
-          .borderWidth = Style::borderWidth(),
-      }
-  );
-
-  const float buttonWidth = Style::controlHeight();
-  const float gap = Style::spaceSm();
-  const float inputWidth = std::max(120.0f, contentWidth - buttonWidth - gap);
-
-  const float selectorH = Style::controlHeightSm();
-  const float schemeW = measureIconSelectorWidth(m_schemeSelectIcon, m_schemeSelectGlyph);
-
-  // Determine scheme selector position based on config
-  float schemeX;
-  float schemeY;
-  if (m_schemeSelectorPosition == "hidden") {
-    // Hide all selector parts (always non-null after initialize())
-    m_schemeSelectBox->setVisible(false);
-    m_schemeSelectIcon->setVisible(false);
-    m_schemeSelectGlyph->setVisible(false);
-    m_schemeSelectArea->setVisible(false);
-    m_schemeSelectLabel->setVisible(false);
-  } else {
-    if (m_schemeSelectorPosition == "top-left") {
-      schemeX = ox + Style::spaceLg();
-      schemeY = oy + Style::spaceLg();
-    } else if (m_schemeSelectorPosition == "bottom-left") {
-      schemeX = ox + Style::spaceLg();
-      schemeY = oy + sh - selectorH - Style::spaceLg();
-    } else if (m_schemeSelectorPosition == "bottom-right") {
-      schemeX = ox + sw - schemeW - Style::spaceLg();
-      schemeY = oy + sh - selectorH - Style::spaceLg();
-    } else {
-      // Default: top-right
-      schemeX = ox + sw - schemeW - Style::spaceLg();
-      schemeY = oy + Style::spaceLg();
-    }
-    layoutSelector(
-        m_schemeSelectBox, m_schemeSelectIcon, m_schemeSelectGlyph, m_schemeSelectArea, schemeX, schemeY, schemeW,
-        selectorH
-    );
-  }
-  if (m_schemeSelectLabel != nullptr) {
-    m_schemeSelectLabel->setVisible(false);
-  }
-
-  layoutPowerButtons(ox, oy, sw, sh);
-  layoutClock(ox, oy, sw, sh, panelX, panelY, panelWidth, panelHeight);
-
-  if (!m_passwordVisible && showsUserDropdown()) {
-    layoutPanelUserSelector(contentLeft, contentTop, contentWidth, rowHeight);
-  } else {
-    m_userSelectBox->setVisible(false);
-    if (m_userSelectIcon != nullptr) {
-      m_userSelectIcon->setVisible(false);
-    }
-    m_userSelectLabel->setVisible(false);
-    m_userSelectGlyph->setVisible(false);
-    m_userSelectArea->setVisible(false);
-    if (m_userMenuSearchField != nullptr) {
-      m_userMenuSearchField->setVisible(false);
-    }
-  }
-
-  const bool showPasswordStep = m_passwordVisible;
-  const bool showBackButton = showPasswordStep && showsUserDropdown();
-  const float buttonRadius = Style::scaledRadiusMd();
-  m_loginButton->setRadius(buttonRadius);
-  m_backButton->setRadius(buttonRadius);
-  m_passwordField->setVisible(showPasswordStep);
-  m_loginButton->setVisible(showPasswordStep);
-  m_backButton->setVisible(showBackButton);
-  if (showPasswordStep) {
-    if (showBackButton) {
-      const float backSize = Style::controlHeight();
-      m_backButton->setSize(backSize, backSize);
-      m_backButton->setPosition((contentLeft), (panelY + panelPadding));
-      m_backButton->layout(*renderer);
-      if (Glyph* backGlyph = m_backButton->glyph()) {
-        (void)backGlyph->measure(*renderer);
-        const auto glyphMetrics = renderer->measureGlyph(backGlyph->codepoint(), backGlyph->fontSize());
-        const float glyphW = glyphMetrics.right - glyphMetrics.left;
-        const float glyphH = glyphMetrics.bottom - glyphMetrics.top;
-        const float glyphY = std::round(backSize * 0.5f - (glyphMetrics.top + glyphMetrics.bottom) * 0.5f);
-        backGlyph->setPosition(std::round(backSize * 0.5f - (glyphMetrics.left + glyphMetrics.right) * 0.5f), glyphY);
-        backGlyph->setSize(std::max(glyphW, 1.0f), std::max(glyphH, 1.0f));
-      }
-    }
-
-    m_passwordField->setSize(inputWidth, 0.0f);
-    m_passwordField->setPosition((contentLeft), (contentTop));
-    m_passwordField->layout(*renderer);
-
-    m_loginButton->setSize(buttonWidth, Style::controlHeight());
-    m_loginButton->setPosition((contentLeft + inputWidth + gap), (contentTop));
-    m_loginButton->layout(*renderer);
-    if (Glyph* loginGlyph = m_loginButton->glyph()) {
-      (void)loginGlyph->measure(*renderer);
-      const auto glyphMetrics = renderer->measureGlyph(loginGlyph->codepoint(), loginGlyph->fontSize());
-      const float glyphW = glyphMetrics.right - glyphMetrics.left;
-      const float glyphH = glyphMetrics.bottom - glyphMetrics.top;
-      const float glyphY = std::round(Style::controlHeight() * 0.5f - (glyphMetrics.top + glyphMetrics.bottom) * 0.5f);
-      loginGlyph->setPosition(std::round(buttonWidth * 0.5f - (glyphMetrics.left + glyphMetrics.right) * 0.5f), glyphY);
-      loginGlyph->setSize(std::max(glyphW, 1.0f), std::max(glyphH, 1.0f));
-    }
-  } else {
-    m_backButton->setVisible(false);
-  }
-
-  const float sessionY = m_passwordVisible ? (contentTop + Style::controlHeight() + sessionRowGap)
-                                           : (contentTop + userBlockHeight + sessionRowGap);
-  layoutPanelSessionSelector(contentLeft, sessionY, contentWidth, sessionRowH);
-
-  if (hasStatus) {
-    const float statusY = contentTop + contentBlockHeight + statusGap;
-    m_statusLabel->setVisible(true);
-    m_statusLabel->setPosition((contentLeft), (statusY));
-  } else {
-    m_statusLabel->setVisible(false);
-  }
-
   layoutOkaru(ox, oy, sw, sh);
 
-  rebuildUserMenu();
-  rebuildSessionMenu();
-  rebuildSchemeMenu();
-
-  rebuildFocusRing();
-  applyMenuHighlight();
-
-  if (!m_isKeyboardOwner) {
-    return;
-  }
-
-  // Keyboard focus is applied once interactive targets have valid layout.
-  const bool applyingInitialFocus = !m_initialFocusDone && !m_focusRing.empty();
-  if (applyingInitialFocus) {
-    setFocusIndex(defaultFocusIndex());
-    m_initialFocusDone = true;
-  } else if (m_focusIndex < 0 && !m_focusRing.empty()) {
-    setFocusIndex(defaultFocusIndex());
-  } else {
-    syncFocusIndexFromFocused();
-  }
-
-  if (applyingInitialFocus
-      && m_passwordVisible
-      && m_passwordField != nullptr
-      && m_passwordField->inputArea() != nullptr) {
-    m_inputDispatcher.setFocus(m_passwordField->inputArea());
-    syncFocusIndexFromFocused();
-  }
-
-  if (m_userMenuSearchFocusPending
-      && m_userMenuSearchField != nullptr
-      && m_userMenuSearchField->inputArea() != nullptr) {
-    m_inputDispatcher.setFocus(m_userMenuSearchField->inputArea());
-    m_userMenuSearchFocusPending = false;
+  if (m_isKeyboardOwner) {
+    reconcileKeyboardFocus();
   }
 }
 
 void GreeterSurface::layoutOkaru(float ox, float oy, float sw, float sh) {
-  // Lo antiguo sigue armado (foco, menús, greetd), pero no se ve: la vista dibuja todo.
-  for (Node* node : std::initializer_list<Node*>{
-           m_loginPanel,         m_headerUserGlyph,   m_headerUserAvatar, m_formSubtitleLabel, m_brandTitleLabel,
-           m_brandSubtitleLabel, m_bottomBrandLogo,   m_userSelectBox,    m_userSelectIcon,    m_userSelectLabel,
-           m_userSelectGlyph,    m_userSelectArea,    m_sessionSelectBox, m_sessionSelectIcon, m_sessionSelectLabel,
-           m_sessionSelectGlyph, m_sessionSelectArea, m_schemeSelectBox,  m_schemeSelectIcon,  m_schemeSelectLabel,
-           m_schemeSelectGlyph,  m_schemeSelectArea,  m_loginButton,      m_backButton,        m_statusLabel,
-           m_clockTimeLabel,     m_clockDateLabel,    m_shutdownButton,   m_rebootButton,      m_firmwareButton
-       }) {
-    if (node != nullptr) {
-      node->setVisible(false);
-    }
-  }
-  if (m_passwordField != nullptr) {
-    m_passwordField->setVisible(true);
-  }
   const std::string& password = m_passwordField != nullptr ? m_passwordField->value() : m_password;
   const auto codepoints = static_cast<std::size_t>(std::ranges::count_if(password, [](char c) {
     return (static_cast<unsigned char>(c) & 0xC0U) != 0x80U;
@@ -1660,9 +765,6 @@ void GreeterSurface::syncAuthInteractivity() {
   if (m_passwordField != nullptr) {
     m_passwordField->setEnabled(!busy);
   }
-  if (m_loginButton != nullptr) {
-    m_loginButton->setEnabled(!busy);
-  }
 }
 
 void GreeterSurface::setSharedAuthBlocked(const bool blocked) {
@@ -1810,17 +912,11 @@ void GreeterSurface::updateStatus(const std::string& text, bool isError) {
   // info prompts, as a neutral hint rather than being discarded.
   m_status = text;
   m_statusIsError = isError;
-  if (m_statusLabel != nullptr) {
-    m_statusLabel->setText(text);
-    m_statusLabel->setColor(colorForRole(isError ? ColorRole::Error : ColorRole::OnSurfaceVariant));
-  }
   requestLayout();
 }
 
 void GreeterSurface::loadUsers() {
   m_users.clear();
-  m_userUids.clear();
-  m_userIconPaths.clear();
   static const std::unordered_set<std::string> kHiddenSystemUsers = {
       "greeter", "greetd", "sddm", "lightdm", "gdm", "nobody",
   };
@@ -1839,8 +935,6 @@ void GreeterSurface::loadUsers() {
       continue;
     }
     m_users.push_back(cached.username);
-    m_userUids.push_back(cached.uid);
-    m_userIconPaths.push_back(cached.iconPath);
   }
   if (!cachedUsers.empty()) {
     kLog.info("AccountsService: {} cached user(s), {} after filters", cachedUsers.size(), m_users.size());
@@ -1862,7 +956,7 @@ void GreeterSurface::loadUsers() {
 
     std::string user = pw->pw_name;
     std::string shell = pw->pw_shell;
-    uid_t uid = pw->pw_uid;
+    const uid_t uid = pw->pw_uid;
 
     if (uid < 1000 || kHiddenSystemUsers.contains(user)) {
       continue;
@@ -1874,8 +968,6 @@ void GreeterSurface::loadUsers() {
       continue;
     }
     m_users.push_back(user);
-    m_userUids.push_back(uid);
-    m_userIconPaths.push_back(accounts::iconFileForUid(uid).value_or(""));
   }
   ::endpwent();
 
@@ -1885,14 +977,9 @@ void GreeterSurface::loadUsers() {
 
   if (m_users.empty()) {
     m_users.push_back("greeter");
-    m_userUids.push_back(0);
-    m_userIconPaths.push_back("");
   }
 
-  appendDummyUsers(m_users, m_userUids);
-  while (m_userIconPaths.size() < m_users.size()) {
-    m_userIconPaths.push_back("");
-  }
+  appendDummyUsers(m_users);
 
   m_selectedUser = 0;
   setUsername(m_users[m_selectedUser]);
@@ -1901,37 +988,6 @@ void GreeterSurface::loadUsers() {
 void GreeterSurface::loadSessions() {
   m_sessions = greeter::discoverSessions();
   m_selectedSession = 0;
-}
-
-void GreeterSurface::refreshSelectionLabels() {
-  if (m_userSelectLabel != nullptr) {
-    const std::string userLabel = m_users.empty() ? "(none)" : m_users[std::min(m_selectedUser, m_users.size() - 1)];
-    m_userSelectLabel->setText(userLabel);
-    m_userSelectLabel->setColor(colorForRole(ColorRole::OnSurface));
-  }
-  if (m_sessionSelectLabel != nullptr) {
-    const std::string sessionLabel =
-        m_sessions.empty() ? "/bin/sh" : m_sessions[std::min(m_selectedSession, m_sessions.size() - 1)].name;
-    m_sessionSelectLabel->setText(sessionLabel);
-  }
-  if (m_userSelectGlyph != nullptr) {
-    m_userSelectGlyph->setColor(colorForRole(ColorRole::OnSurfaceVariant));
-  }
-  syncPanelUserChrome();
-  syncPanelSessionChrome();
-  if (m_schemeSelectLabel != nullptr) {
-    const std::string schemeLabel =
-        m_schemeNames.empty() ? "OKARU" : m_schemeNames[std::min(m_selectedScheme, m_schemeNames.size() - 1)];
-    m_schemeSelectLabel->setText(schemeLabel);
-    m_schemeSelectLabel->setColor(colorForRole(ColorRole::OnSurface));
-  }
-  if (m_schemeSelectGlyph != nullptr) {
-    m_schemeSelectGlyph->setColor(colorForRole(ColorRole::OnSurfaceVariant));
-  }
-  if (m_schemeSelectIcon != nullptr) {
-    m_schemeSelectIcon->setColor(colorForRole(ColorRole::OnSurfaceVariant));
-  }
-  applySelectorBoxStyle(m_schemeSelectBox, m_schemeSelectArea);
 }
 
 void GreeterSurface::buildSchemeNames() {
@@ -2047,65 +1103,6 @@ void GreeterSurface::applyScheme(const std::size_t schemeIndex) {
   applyConfiguredWallpaper();
 }
 
-void GreeterSurface::syncHeaderUserAvatar(
-    Renderer& renderer, const float size, const float panelX, const float panelWidth, const float headerY
-) {
-  const bool canShowAvatar = !m_users.empty()
-      && m_selectedUser < m_users.size()
-      && m_selectedUser < m_userIconPaths.size()
-      && m_headerUserAvatar != nullptr
-      && m_renderContext != nullptr;
-  const std::string iconPath = canShowAvatar ? m_userIconPaths[m_selectedUser] : std::string{};
-  // size is logical; decode at buffer resolution so HiDPI outputs stay sharp.
-  const int avatarPixelSize = canShowAvatar ? static_cast<int>(std::lround(size * m_renderContext->renderScale())) : 0;
-
-  if (canShowAvatar
-      && !iconPath.empty()
-      && (iconPath != m_loadedHeaderAvatarPath || avatarPixelSize != m_loadedHeaderAvatarPixelSize)) {
-    if (m_headerAvatarTexture.id != 0) {
-      m_renderContext->textureManager().unload(m_headerAvatarTexture);
-      m_headerAvatarTexture = {};
-    }
-    m_loadedHeaderAvatarPath = iconPath;
-    m_loadedHeaderAvatarPixelSize = avatarPixelSize;
-    m_headerAvatarTexture = m_renderContext->textureManager().loadFromFile(iconPath, avatarPixelSize, true);
-  }
-
-  if (!canShowAvatar || iconPath.empty() || m_headerAvatarTexture.id == 0) {
-    if (m_headerUserAvatar != nullptr) {
-      m_headerUserAvatar->setVisible(false);
-    }
-    if (m_headerUserGlyph != nullptr) {
-      m_headerUserGlyph->setVisible(true);
-      m_headerUserGlyph->setGlyphSize(size);
-      m_headerUserGlyph->setColor(colorForRole(ColorRole::OnSurface));
-      (void)m_headerUserGlyph->measure(renderer);
-      const auto glyphMetrics = renderer.measureGlyph(m_headerUserGlyph->codepoint(), m_headerUserGlyph->fontSize());
-      const float glyphY = headerY + std::round(size * 0.5f - (glyphMetrics.top + glyphMetrics.bottom) * 0.5f);
-      m_headerUserGlyph->setPosition(
-          std::round(panelX + panelWidth * 0.5f - (glyphMetrics.left + glyphMetrics.right) * 0.5f), glyphY
-      );
-    }
-    return;
-  }
-
-  if (m_headerUserGlyph != nullptr) {
-    m_headerUserGlyph->setVisible(false);
-  }
-
-  const float avatarX = std::round(panelX + panelWidth * 0.5f - size * 0.5f);
-  const float avatarY = headerY;
-  m_headerUserAvatar->setTextureId(m_headerAvatarTexture.id);
-  m_headerUserAvatar->setTextureSize(m_headerAvatarTexture.width, m_headerAvatarTexture.height);
-  m_headerUserAvatar->setTint({1.0f, 1.0f, 1.0f, 1.0f});
-  m_headerUserAvatar->setRadius(0.0f); // OKARU: avatar cuadrado, como en el centro de control
-  m_headerUserAvatar->setBorder(colorForRole(ColorRole::Primary), Style::borderWidth() * kHeaderAvatarBorderScale);
-  m_headerUserAvatar->setFitMode(ImageFitMode::Cover);
-  m_headerUserAvatar->setSize(size, size);
-  m_headerUserAvatar->setPosition(avatarX, avatarY);
-  m_headerUserAvatar->setVisible(true);
-}
-
 void GreeterSurface::syncWallpaperTexture() {
   if (!m_wallpaperDirty || m_wallpaper == nullptr || m_renderContext == nullptr) {
     return;
@@ -2193,16 +1190,6 @@ void GreeterSurface::loadPreferences() {
       }
     }
   }
-
-  m_hideLogo = prefs.hideLogo;
-  m_powerButtonsPosition = prefs.powerButtonsPosition.value_or("bottom-right");
-  m_schemeSelectorPosition = prefs.schemeSelectorPosition.value_or("top-right");
-  m_clockEnabled = prefs.clockEnabled;
-  m_clockPosition = prefs.clockPosition;
-  m_clockTimeFormat = prefs.clockTimeFormat;
-  m_clockDateFormat = prefs.clockDateFormat;
-  m_clockTimeFontSize = prefs.clockTimeFontSize;
-  m_clockDateFontSize = prefs.clockDateFontSize;
 }
 
 void GreeterSurface::savePreferences() const {
@@ -2219,1675 +1206,14 @@ void GreeterSurface::savePreferences() const {
   }
 }
 
-void GreeterSurface::toggleUserMenu() {
-  if (m_userMenuOpen) {
-    m_userMenuOpen = false;
-    m_userMenuSearchQuery.clear();
-    if (m_userMenuSearchField != nullptr) {
-      m_userMenuSearchField->setValue("");
-    }
-  } else {
-    openUserMenu();
-    return;
-  }
-  requestLayout();
-}
-
-void GreeterSurface::openUserMenu() {
-  if (m_userMenuOpen || m_passwordVisible || !showsUserDropdown()) {
-    return;
-  }
-  m_userMenuOpen = true;
-  m_sessionMenuOpen = false;
-  clearSessionMenu();
-  m_userMenuSearchQuery.clear();
-  if (m_userMenuSearchField != nullptr) {
-    m_userMenuSearchField->setValue("");
-  }
-  m_userMenuScrollOffset = 0;
-  m_userMenuSearchFocusPending = true;
-  requestLayout();
-}
-
-void GreeterSurface::toggleSessionMenu() {
-  m_sessionMenuOpen = !m_sessionMenuOpen;
-  if (m_sessionMenuOpen) {
-    m_userMenuOpen = false;
-    m_schemeMenuOpen = false;
-    clearUserMenu();
-    clearSchemeMenu();
-  }
-  m_menuHighlight = -1;
-  m_sessionMenuScroll.offset = 0;
-  m_menuScrollRemainder = 0.0f;
-  requestLayout();
-}
-
-void GreeterSurface::toggleSchemeMenu() {
-  // Don't toggle the menu if the selector is hidden
-  if (m_schemeSelectorPosition == "hidden" && m_schemeMenuOpen) {
-    m_schemeMenuOpen = false;
-    requestLayout();
-    return;
-  }
-  m_schemeMenuOpen = !m_schemeMenuOpen;
-  if (m_schemeMenuOpen) {
-    m_userMenuOpen = false;
-    m_sessionMenuOpen = false;
-    clearUserMenu();
-    clearSessionMenu();
-  }
-  m_menuHighlight = -1;
-  m_schemeMenuScroll.offset = 0;
-  m_menuScrollRemainder = 0.0f;
-  requestLayout();
-}
-
-void GreeterSurface::closeMenus() {
-  m_userMenuOpen = false;
-  m_sessionMenuOpen = false;
-  m_schemeMenuOpen = false;
-  m_userMenuSearchQuery.clear();
-  m_menuHighlight = -1;
-  clearUserMenu();
-  clearSessionMenu();
-  clearSchemeMenu();
-}
-
-InputArea* GreeterSurface::menuReturnFocusTarget() const {
-  // The session and scheme selectors are a detour from the only control that
-  // matters on the password step, and the pointer path cannot infer this from the
-  // previous focus: a click focuses the selector before its handler runs, so
-  // "where focus was" is already the selector itself. Naming the password field
-  // outright keeps keyboard, focus-ring and pointer opens behaving alike.
-  if (!m_passwordVisible || m_passwordField == nullptr) {
-    return nullptr;
-  }
-  return m_passwordField->inputArea();
-}
-
-void GreeterSurface::closeMenusAndRestoreFocus() {
-  InputArea* owner = m_userMenuOpen ? m_userSelectArea
-      : m_sessionMenuOpen           ? m_sessionSelectArea
-      : m_schemeMenuOpen            ? m_schemeSelectArea
-                                    : nullptr;
-  InputArea* target = owner;
-  // The user menu belongs to the step before the password field exists.
-  if (m_sessionMenuOpen || m_schemeMenuOpen) {
-    if (InputArea* passwordArea = menuReturnFocusTarget(); passwordArea != nullptr) {
-      target = passwordArea;
-    }
-  }
-  closeMenus();
-  if (target != nullptr) {
-    m_inputDispatcher.setFocus(target);
-  }
-  requestLayout();
-}
-
-void GreeterSurface::selectSession(std::size_t index) {
-  if (index >= m_sessions.size()) {
-    return;
-  }
-  m_selectedSession = index;
-  refreshSelectionLabels();
-  savePreferences();
-  m_sessionMenuOpen = false;
-  m_menuHighlight = -1;
-  InputArea* sessionFocus = menuReturnFocusTarget();
-  if (sessionFocus == nullptr) {
-    sessionFocus = m_sessionSelectArea;
-  }
-  if (sessionFocus != nullptr) {
-    m_inputDispatcher.setFocus(sessionFocus);
-  }
-  notifyStateChanged();
-  commitImmediateFrame(true);
-}
-
-void GreeterSurface::selectScheme(std::size_t index) {
-  if (index >= m_schemeNames.size()) {
-    return;
-  }
-  applyScheme(index);
-  refreshSelectionLabels();
-  savePreferences();
-  m_schemeMenuOpen = false;
-  m_menuHighlight = -1;
-  InputArea* schemeFocus = menuReturnFocusTarget();
-  if (schemeFocus == nullptr) {
-    schemeFocus = m_schemeSelectArea;
-  }
-  if (schemeFocus != nullptr) {
-    m_inputDispatcher.setFocus(schemeFocus);
-  }
-  notifyStateChanged();
-  commitImmediateFrame(true);
-}
-
-void GreeterSurface::runBackAction() {
-  if (!showsUserDropdown()) {
-    return;
-  }
-  m_passwordVisible = false;
-  m_passwordField->setValue("");
-  m_password.clear();
-  updateStatus("", false);
-  if (m_userSelectArea != nullptr) {
-    m_inputDispatcher.setFocus(m_userSelectArea);
-  }
-  notifyStateChanged();
-  commitImmediateFrame(true);
-}
-
-bool GreeterSurface::menuOpen() const noexcept { return m_userMenuOpen || m_sessionMenuOpen || m_schemeMenuOpen; }
-
-void GreeterSurface::rebuildFocusRing() {
-  InputArea* previouslyFocused = InputArea::getFocused();
-  m_focusRing.clear();
-
-  if (m_passwordVisible) {
-    if (m_passwordField != nullptr && m_passwordField->inputArea() != nullptr) {
-      m_focusRing.push_back({m_passwordField->inputArea(), {}});
-    }
-    if (m_loginButton != nullptr && m_loginButton->inputArea() != nullptr) {
-      m_focusRing.push_back({m_loginButton->inputArea(), [this]() { tryAuthenticate(); }});
-    }
-    if (m_backButton != nullptr && m_backButton->inputArea() != nullptr && showsUserDropdown()) {
-      m_focusRing.push_back({m_backButton->inputArea(), [this]() { runBackAction(); }});
-    }
-  } else if (showsUserDropdown() && m_userSelectArea != nullptr) {
-    m_focusRing.push_back({m_userSelectArea, [this]() {
-                             if (!m_passwordVisible && m_selectedUser < m_users.size()) {
-                               enterPasswordStep(m_selectedUser);
-                             }
-                           }});
-  }
-
-  if (m_sessionSelectArea != nullptr) {
-    m_focusRing.push_back({m_sessionSelectArea, [this]() { toggleSessionMenu(); }});
-  }
-  if (m_schemeSelectArea != nullptr && m_schemeSelectArea->visible()) {
-    m_focusRing.push_back({m_schemeSelectArea, [this]() { toggleSchemeMenu(); }});
-  }
-
-  if (m_firmwareButton != nullptr && m_firmwareButton->inputArea() != nullptr && m_firmwareButton->visible()) {
-    m_focusRing.push_back({m_firmwareButton->inputArea(), []() { power::rebootToFirmwareSetup(); }});
-  }
-  if (m_rebootButton != nullptr && m_rebootButton->inputArea() != nullptr && m_rebootButton->visible()) {
-    m_focusRing.push_back({m_rebootButton->inputArea(), []() { power::reboot(); }});
-  }
-  if (m_shutdownButton != nullptr && m_shutdownButton->inputArea() != nullptr && m_shutdownButton->visible()) {
-    m_focusRing.push_back({m_shutdownButton->inputArea(), []() { power::powerOff(); }});
-  }
-
-  // Keep focus on whatever was focused before the rebuild, if still present.
-  m_focusIndex = -1;
-  for (std::size_t i = 0; i < m_focusRing.size(); ++i) {
-    if (m_focusRing[i].area == previouslyFocused) {
-      m_focusIndex = static_cast<std::ptrdiff_t>(i);
-      break;
-    }
-  }
-}
-
-float GreeterSurface::measureIconSelectorWidth(Glyph* icon, Glyph* chevron) const {
-  if (m_renderContext == nullptr) {
-    return Style::controlHeightSm();
-  }
-
-  auto& renderer = *m_renderContext;
-  float width = Style::spaceMd() * 2.0f + Style::spaceSm();
-  if (icon != nullptr) {
-    (void)icon->measure(renderer);
-    const auto iconMetrics = renderer.measureGlyph(icon->codepoint(), icon->fontSize());
-    width += iconMetrics.right - iconMetrics.left;
-  }
-  if (chevron != nullptr) {
-    width += Style::spaceSm();
-    (void)chevron->measure(renderer);
-    const auto chevronMetrics = renderer.measureGlyph(chevron->codepoint(), chevron->fontSize());
-    width += chevronMetrics.right - chevronMetrics.left;
-  }
-  return std::max(width, Style::controlHeightSm());
-}
-
-void GreeterSurface::layoutSelector(
-    Box* box, Glyph* icon, Glyph* chevron, InputArea* area, float x, float y, float w, float h
-) {
-  auto* renderer = m_renderContext;
-  if (renderer == nullptr || box == nullptr || chevron == nullptr || area == nullptr) {
-    return;
-  }
-
-  applySelectorBoxStyle(box, area);
-  box->setVisible(true);
-  box->setPosition(x, y);
-  box->setSize(w, h);
-  box->layout(*renderer);
-
-  if (icon != nullptr) {
-    icon->setVisible(true);
-    icon->setColor(colorForRole(ColorRole::OnSurfaceVariant));
-    (void)icon->measure(*renderer);
-    const auto iconMetrics = renderer->measureGlyph(icon->codepoint(), icon->fontSize());
-    const float iconY = y + std::round(h * 0.5f - (iconMetrics.top + iconMetrics.bottom) * 0.5f);
-    icon->setPosition(x + Style::spaceMd(), iconY);
-  }
-
-  chevron->setVisible(true);
-  chevron->setColor(colorForRole(ColorRole::OnSurfaceVariant));
-  (void)chevron->measure(*renderer);
-  const auto glyphMetrics = renderer->measureGlyph(chevron->codepoint(), chevron->fontSize());
-  const float glyphW = glyphMetrics.right - glyphMetrics.left;
-  const float glyphY = y + std::round(h * 0.5f - (glyphMetrics.top + glyphMetrics.bottom) * 0.5f);
-  chevron->setPosition(x + w - Style::spaceMd() - glyphW, glyphY);
-
-  area->setVisible(true);
-  area->setPosition(x, y);
-  area->setSize(w, h);
-}
-
-void GreeterSurface::applySelectorBoxStyle(Box* box, const InputArea* area) {
-  if (box == nullptr) {
-    return;
-  }
-  const bool menuOpen = (box == m_schemeSelectBox && m_schemeMenuOpen) || (box == m_userSelectBox && m_userMenuOpen);
-  const bool active = menuOpen || (area != nullptr && area->focused());
-  box->setStyle(
-      RoundedRectStyle{
-          .fill = active ? colorForRole(ColorRole::Surface) : colorForRole(ColorRole::SurfaceVariant),
-          .border = active ? colorForRole(ColorRole::Primary) : colorForRole(ColorRole::Outline),
-          .fillMode = FillMode::Solid,
-          .radius = Style::scaledRadiusLg(),
-          .softness = 1.0f,
-          .borderWidth = active ? std::max(Style::borderWidth(), Style::borderWidth() * 2.0f) : Style::borderWidth(),
-      }
-  );
-}
-
-void GreeterSurface::syncPanelUserChrome() {
-  if (m_userSelectBox == nullptr || m_userSelectArea == nullptr) {
-    return;
-  }
-
-  const InputArea* area = m_userSelectArea;
-  const bool active = m_userMenuOpen || area->focused();
-
-  m_userSelectBox->setStyle(
-      RoundedRectStyle{
-          .fill = active ? colorForRole(ColorRole::Secondary) : colorForRole(ColorRole::Surface),
-          .border = active ? colorForRole(ColorRole::Primary) : colorForRole(ColorRole::Outline),
-          .fillMode = FillMode::Solid,
-          .radius = Style::scaledRadiusLg(),
-          .softness = 1.0f,
-          .borderWidth = active ? std::max(Style::borderWidth(), Style::borderWidth() * 2.0f) : Style::borderWidth(),
-      }
-  );
-
-  const Color labelColor = active ? colorForRole(ColorRole::OnSecondary) : colorForRole(ColorRole::OnSurface);
-  const Color iconColor = active ? colorForRole(ColorRole::OnSecondary) : colorForRole(ColorRole::OnSurfaceVariant);
-  if (m_userSelectLabel != nullptr) {
-    m_userSelectLabel->setColor(labelColor);
-  }
-  if (m_userSelectIcon != nullptr) {
-    m_userSelectIcon->setColor(iconColor);
-  }
-  if (m_userSelectGlyph != nullptr) {
-    m_userSelectGlyph->setColor(iconColor);
-  }
-  if (m_userMenuSearchField != nullptr) {
-    m_userMenuSearchField->setActiveChrome(m_userMenuOpen);
-  }
-}
-
-void GreeterSurface::layoutPanelUserSelector(float x, float y, float w, float h) {
-  auto* renderer = m_renderContext;
-  if (renderer == nullptr
-      || m_userSelectBox == nullptr
-      || m_userSelectLabel == nullptr
-      || m_userSelectGlyph == nullptr
-      || m_userSelectArea == nullptr) {
-    return;
-  }
-
-  syncPanelUserChrome();
-  m_userSelectBox->setVisible(true);
-  m_userSelectBox->setPosition(x, y);
-  m_userSelectBox->setSize(w, h);
-  m_userSelectBox->layout(*renderer);
-
-  float textX = x + Style::spaceMd();
-  float chevronReserve = Style::spaceMd();
-  if (m_userSelectGlyph != nullptr) {
-    (void)m_userSelectGlyph->measure(*renderer);
-    const auto chevronMetrics = renderer->measureGlyph(m_userSelectGlyph->codepoint(), m_userSelectGlyph->fontSize());
-    chevronReserve += chevronMetrics.right - chevronMetrics.left;
-  }
-
-  if (m_userSelectIcon != nullptr) {
-    m_userSelectIcon->setVisible(true);
-    (void)m_userSelectIcon->measure(*renderer);
-    const auto iconMetrics = renderer->measureGlyph(m_userSelectIcon->codepoint(), m_userSelectIcon->fontSize());
-    const float iconW = iconMetrics.right - iconMetrics.left;
-    const float iconY = y + std::round(h * 0.5f - (iconMetrics.top + iconMetrics.bottom) * 0.5f);
-    m_userSelectIcon->setPosition(textX, iconY);
-    textX += iconW + Style::spaceSm();
-  }
-
-  const float fieldW = std::max(0.0f, w - (textX - x) - chevronReserve - Style::spaceSm());
-  const float openFieldX = x + Style::spaceMd();
-  const float openFieldW = std::max(0.0f, w - Style::spaceMd() - chevronReserve - Style::spaceSm());
-
-  if (m_userMenuOpen && m_userMenuSearchField != nullptr) {
-    if (m_userSelectIcon != nullptr) {
-      m_userSelectIcon->setVisible(false);
-    }
-    m_userSelectLabel->setVisible(false);
-    m_userSelectArea->setVisible(false);
-    m_userMenuSearchField->setVisible(true);
-    layoutUserMenuSearchField(openFieldX, y, openFieldW, h);
-  } else {
-    if (m_userMenuSearchField != nullptr) {
-      m_userMenuSearchField->setVisible(false);
-    }
-    m_userSelectLabel->setVisible(true);
-    m_userSelectLabel->setMaxWidth(fieldW);
-    m_userSelectLabel->measure(*renderer);
-    m_userSelectLabel->setPosition(textX, y + std::round((h - m_userSelectLabel->height()) * 0.5f));
-    m_userSelectArea->setVisible(true);
-    m_userSelectArea->setPosition(x, y);
-    m_userSelectArea->setSize(w, h);
-  }
-
-  m_userSelectGlyph->setVisible(true);
-  (void)m_userSelectGlyph->measure(*renderer);
-  const auto glyphMetrics = renderer->measureGlyph(m_userSelectGlyph->codepoint(), m_userSelectGlyph->fontSize());
-  const float glyphW = glyphMetrics.right - glyphMetrics.left;
-  const float glyphY = y + std::round(h * 0.5f - (glyphMetrics.top + glyphMetrics.bottom) * 0.5f);
-  m_userSelectGlyph->setPosition(x + w - Style::spaceMd() - glyphW, glyphY);
-}
-
-void GreeterSurface::syncPanelSessionChrome() {
-  if (m_sessionSelectBox == nullptr || m_sessionSelectArea == nullptr) {
-    return;
-  }
-
-  const InputArea* area = m_sessionSelectArea;
-  const bool active = m_sessionMenuOpen || area->focused();
-
-  m_sessionSelectBox->setStyle(
-      RoundedRectStyle{
-          .fill = active ? colorForRole(ColorRole::Secondary) : colorForRole(ColorRole::Surface),
-          .border = active ? colorForRole(ColorRole::Primary) : colorForRole(ColorRole::Outline),
-          .fillMode = FillMode::Solid,
-          .radius = Style::scaledRadiusLg(),
-          .softness = 1.0f,
-          .borderWidth = active ? std::max(Style::borderWidth(), Style::borderWidth() * 2.0f) : Style::borderWidth(),
-      }
-  );
-
-  const Color labelColor = active ? colorForRole(ColorRole::OnSecondary) : colorForRole(ColorRole::OnSurface);
-  const Color iconColor = active ? colorForRole(ColorRole::OnSecondary) : colorForRole(ColorRole::OnSurfaceVariant);
-  if (m_sessionSelectLabel != nullptr) {
-    m_sessionSelectLabel->setColor(labelColor);
-  }
-  if (m_sessionSelectIcon != nullptr) {
-    m_sessionSelectIcon->setColor(iconColor);
-  }
-  if (m_sessionSelectGlyph != nullptr) {
-    m_sessionSelectGlyph->setColor(iconColor);
-  }
-}
-
-void GreeterSurface::layoutPanelSessionSelector(float x, float y, float w, float h) {
-  auto* renderer = m_renderContext;
-  if (renderer == nullptr
-      || m_sessionSelectBox == nullptr
-      || m_sessionSelectLabel == nullptr
-      || m_sessionSelectGlyph == nullptr
-      || m_sessionSelectArea == nullptr) {
-    return;
-  }
-
-  syncPanelSessionChrome();
-  m_sessionSelectBox->setVisible(true);
-  m_sessionSelectBox->setPosition(x, y);
-  m_sessionSelectBox->setSize(w, h);
-  m_sessionSelectBox->layout(*renderer);
-
-  float textX = x + Style::spaceMd();
-  float chevronReserve = Style::spaceMd();
-  if (m_sessionSelectGlyph != nullptr) {
-    (void)m_sessionSelectGlyph->measure(*renderer);
-    const auto chevronMetrics =
-        renderer->measureGlyph(m_sessionSelectGlyph->codepoint(), m_sessionSelectGlyph->fontSize());
-    chevronReserve += chevronMetrics.right - chevronMetrics.left;
-  }
-
-  if (m_sessionSelectIcon != nullptr) {
-    m_sessionSelectIcon->setVisible(true);
-    (void)m_sessionSelectIcon->measure(*renderer);
-    const auto iconMetrics = renderer->measureGlyph(m_sessionSelectIcon->codepoint(), m_sessionSelectIcon->fontSize());
-    const float iconW = iconMetrics.right - iconMetrics.left;
-    const float iconY = y + std::round(h * 0.5f - (iconMetrics.top + iconMetrics.bottom) * 0.5f);
-    m_sessionSelectIcon->setPosition(textX, iconY);
-    textX += iconW + Style::spaceSm();
-  }
-
-  m_sessionSelectLabel->setVisible(true);
-  m_sessionSelectLabel->setMaxWidth(std::max(0.0f, w - (textX - x) - chevronReserve - Style::spaceSm()));
-  m_sessionSelectLabel->measure(*renderer);
-  m_sessionSelectLabel->setPosition(textX, y + std::round((h - m_sessionSelectLabel->height()) * 0.5f));
-
-  m_sessionSelectGlyph->setVisible(true);
-  (void)m_sessionSelectGlyph->measure(*renderer);
-  const auto glyphMetrics = renderer->measureGlyph(m_sessionSelectGlyph->codepoint(), m_sessionSelectGlyph->fontSize());
-  const float glyphW = glyphMetrics.right - glyphMetrics.left;
-  const float glyphY = y + std::round(h * 0.5f - (glyphMetrics.top + glyphMetrics.bottom) * 0.5f);
-  m_sessionSelectGlyph->setPosition(x + w - Style::spaceMd() - glyphW, glyphY);
-
-  m_sessionSelectArea->setVisible(true);
-  m_sessionSelectArea->setPosition(x, y);
-  m_sessionSelectArea->setSize(w, h);
-}
-
-std::ptrdiff_t GreeterSurface::defaultFocusIndex() const {
-  if (m_focusRing.empty()) {
-    return 0;
-  }
-
-  if (m_passwordVisible && m_passwordField != nullptr && m_passwordField->inputArea() != nullptr) {
-    for (std::size_t i = 0; i < m_focusRing.size(); ++i) {
-      if (m_focusRing[i].area == m_passwordField->inputArea()) {
-        return static_cast<std::ptrdiff_t>(i);
-      }
-    }
-  }
-
-  if (!m_passwordVisible && showsUserDropdown() && m_userSelectArea != nullptr) {
-    for (std::size_t i = 0; i < m_focusRing.size(); ++i) {
-      if (m_focusRing[i].area == m_userSelectArea) {
-        return static_cast<std::ptrdiff_t>(i);
-      }
-    }
-  }
-
-  return 0;
-}
-
-void GreeterSurface::syncFocusIndexFromFocused() {
-  InputArea* focused = InputArea::getFocused();
-  if (focused == nullptr) {
-    return;
-  }
-  for (std::size_t i = 0; i < m_focusRing.size(); ++i) {
-    if (m_focusRing[i].area == focused) {
-      m_focusIndex = static_cast<std::ptrdiff_t>(i);
-      return;
-    }
-  }
-}
-
-void GreeterSurface::layoutPowerButtons(float ox, float oy, float sw, float sh) {
-  auto* renderer = m_renderContext;
-  if (renderer == nullptr) {
-    return;
-  }
-
-  // Handle hidden position
-  if (m_powerButtonsPosition == "hidden") {
-    m_shutdownButton->setVisible(false);
-    m_rebootButton->setVisible(false);
-    if (m_firmwareButton != nullptr) {
-      m_firmwareButton->setVisible(false);
-    }
-    return;
-  }
-
-  const float size = Style::controlHeight();
-  const float margin = Style::spaceLg();
-  const float gap = Style::spaceSm();
-
-  // Determine anchor position based on config
-  float y;
-  const bool sharesSchemeCorner =
-      m_schemeSelectorPosition != "hidden" && m_powerButtonsPosition == m_schemeSelectorPosition;
-  const float schemeOffset = sharesSchemeCorner ? Style::controlHeightSm() + gap : 0.0f;
-  if (m_powerButtonsPosition == "top-left" || m_powerButtonsPosition == "top-right") {
-    y = oy + margin + schemeOffset;
-  } else {
-    // Default: bottom-left or bottom-right
-    y = oy + sh - size - margin - schemeOffset;
-  }
-
-  const auto place = [&](Button* btn, float x) {
-    if (btn == nullptr) {
-      return;
-    }
-    btn->setVisible(true);
-    btn->setRadius(Style::scaledRadius(Style::controlHeightBase * 0.5f));
-    btn->setSize(size, size);
-    btn->setPosition(x, y);
-    btn->layout(*renderer);
-    if (Glyph* glyph = btn->glyph()) {
-      (void)glyph->measure(*renderer);
-      const auto metrics = renderer->measureGlyph(glyph->codepoint(), glyph->fontSize());
-      const float glyphW = metrics.right - metrics.left;
-      const float glyphH = metrics.bottom - metrics.top;
-      glyph->setPosition(
-          std::round(size * 0.5f - (metrics.left + metrics.right) * 0.5f),
-          std::round(size * 0.5f - (metrics.top + metrics.bottom) * 0.5f)
-      );
-      glyph->setSize(std::max(glyphW, 1.0f), std::max(glyphH, 1.0f));
-    }
-  };
-
-  // Determine horizontal placement: right-aligned (default) or left-aligned
-  if (m_powerButtonsPosition == "bottom-left" || m_powerButtonsPosition == "top-left") {
-    // Left-aligned: firmware → reboot → shutdown (left to right)
-    float x = ox + margin;
-    if (m_firmwareButton != nullptr) {
-      place(m_firmwareButton, x);
-      x += size + gap;
-    }
-    place(m_rebootButton, x);
-    x += size + gap;
-    place(m_shutdownButton, x);
-  } else {
-    // Right-aligned (default): shutdown → reboot → firmware (right to left)
-    float x = ox + sw - size - margin;
-    place(m_shutdownButton, x);
-    x -= size + gap;
-    place(m_rebootButton, x);
-    if (m_firmwareButton != nullptr) {
-      x -= size + gap;
-      place(m_firmwareButton, x);
-    }
-  }
-}
-
-void GreeterSurface::layoutClock(
-    const float ox, const float oy, const float sw, const float sh, const float panelX, const float panelY,
-    const float panelWidth, const float panelHeight
-) {
-  if (m_renderContext == nullptr || m_clockTimeLabel == nullptr || m_clockDateLabel == nullptr) {
-    return;
-  }
-  if (!m_clockEnabled || (m_clockTimeLabel->text().empty() && m_clockDateLabel->text().empty())) {
-    m_clockTimeLabel->setVisible(false);
-    m_clockDateLabel->setVisible(false);
-    return;
-  }
-
-  m_clockTimeLabel->setVisible(!m_clockTimeLabel->text().empty());
-  m_clockDateLabel->setVisible(!m_clockDateLabel->text().empty());
-  m_clockTimeLabel->setColor(colorForRole(ColorRole::OnSurface));
-  m_clockDateLabel->setColor(colorForRole(ColorRole::OnSurfaceVariant));
-
-  const float margin = Style::spaceLg();
-  const float lineGap = Style::spaceXs();
-  const float widthLimit = std::max(1.0f, std::min(panelWidth, sw - margin * 2.0f));
-  m_clockTimeLabel->setMaxWidth(widthLimit);
-  m_clockDateLabel->setMaxWidth(widthLimit);
-  if (m_clockTimeLabel->visible()) {
-    m_clockTimeLabel->measure(*m_renderContext);
-  }
-  if (m_clockDateLabel->visible()) {
-    m_clockDateLabel->measure(*m_renderContext);
-  }
-  const float blockWidth = std::max(
-      m_clockTimeLabel->visible() ? m_clockTimeLabel->width() : 0.0f,
-      m_clockDateLabel->visible() ? m_clockDateLabel->width() : 0.0f
-  );
-
-  const auto blockHeight = [this, lineGap]() {
-    const float timeHeight = m_clockTimeLabel->visible() ? m_clockTimeLabel->height() : 0.0f;
-    const float dateHeight = m_clockDateLabel->visible() ? m_clockDateLabel->height() : 0.0f;
-    return timeHeight + dateHeight + (m_clockTimeLabel->visible() && m_clockDateLabel->visible() ? lineGap : 0.0f);
-  };
-
-  float totalHeight = blockHeight();
-  float blockX = panelX + (panelWidth - blockWidth) * 0.5f;
-  float blockY = 0.0f;
-  if (m_clockPosition == "above-panel") {
-    float minimumY = oy + margin;
-    if (m_configErrorBanner != nullptr && m_configErrorBanner->visible()) {
-      minimumY = std::max(minimumY, m_configErrorBanner->y() + m_configErrorBanner->height() + Style::spaceSm());
-    }
-    blockY = panelY - totalHeight - Style::spaceXl();
-    if (blockY < minimumY && m_clockDateLabel->visible()) {
-      m_clockDateLabel->setVisible(false);
-      totalHeight = blockHeight();
-      blockY = panelY - totalHeight - Style::spaceXl();
-    }
-    if (blockY < minimumY) {
-      m_clockTimeLabel->setVisible(false);
-      m_clockDateLabel->setVisible(false);
-      return;
-    }
-  } else if (m_clockPosition == "top-center" || m_clockPosition == "bottom-center") {
-    const bool onBottom = m_clockPosition == "bottom-center";
-    blockX = ox + (sw - blockWidth) * 0.5f;
-    if (onBottom) {
-      const float logoTop =
-          m_bottomBrandLogo != nullptr && m_bottomBrandLogo->visible() ? m_bottomBrandLogo->y() : oy + sh - margin;
-      blockY = logoTop
-          - totalHeight
-          - (m_bottomBrandLogo != nullptr && m_bottomBrandLogo->visible() ? Style::spaceSm() : 0.0f);
-      const float maximumPanelY = panelY + panelHeight + Style::spaceXl();
-      if (blockY < maximumPanelY && m_clockDateLabel->visible()) {
-        m_clockDateLabel->setVisible(false);
-        totalHeight = blockHeight();
-        blockY = logoTop
-            - totalHeight
-            - (m_bottomBrandLogo != nullptr && m_bottomBrandLogo->visible() ? Style::spaceSm() : 0.0f);
-      }
-      if (blockY < maximumPanelY) {
-        m_clockTimeLabel->setVisible(false);
-        m_clockDateLabel->setVisible(false);
-        return;
-      }
-    } else {
-      blockY = oy + margin;
-      if (m_configErrorBanner != nullptr && m_configErrorBanner->visible()) {
-        blockY = m_configErrorBanner->y() + m_configErrorBanner->height() + Style::spaceSm();
-      }
-      const float panelLimit = panelY - Style::spaceXl();
-      if (blockY + totalHeight > panelLimit && m_clockDateLabel->visible()) {
-        m_clockDateLabel->setVisible(false);
-        totalHeight = blockHeight();
-      }
-      if (blockY + totalHeight > panelLimit) {
-        m_clockTimeLabel->setVisible(false);
-        m_clockDateLabel->setVisible(false);
-        return;
-      }
-    }
-  } else {
-    const bool onRight = m_clockPosition == "top-right" || m_clockPosition == "bottom-right";
-    const bool onBottom = m_clockPosition == "bottom-left" || m_clockPosition == "bottom-right";
-    float occupied = 0.0f;
-    if (m_schemeSelectorPosition != "hidden" && m_schemeSelectorPosition == m_clockPosition) {
-      occupied += Style::controlHeightSm() + Style::spaceSm();
-    }
-    if (m_powerButtonsPosition != "hidden" && m_powerButtonsPosition == m_clockPosition) {
-      occupied += Style::controlHeight() + Style::spaceSm();
-    }
-    blockX = onRight ? ox + sw - margin - blockWidth : ox + margin;
-    blockY = onBottom ? oy + sh - margin - occupied - totalHeight : oy + margin + occupied;
-    if (blockY < oy + margin || blockY + totalHeight > oy + sh - margin) {
-      m_clockTimeLabel->setVisible(false);
-      m_clockDateLabel->setVisible(false);
-      return;
-    }
-  }
-
-  float y = blockY;
-  const auto placeCentered = [blockX, blockWidth, &y](Label* label, const float followingGap) {
-    if (label == nullptr || !label->visible()) {
-      return;
-    }
-    label->setPosition(std::round(blockX + (blockWidth - label->width()) * 0.5f), std::round(y));
-    y += label->height() + followingGap;
-  };
-  placeCentered(m_clockTimeLabel, m_clockDateLabel->visible() ? lineGap : 0.0f);
-  placeCentered(m_clockDateLabel, 0.0f);
-}
-
-void GreeterSurface::setFocusIndex(std::ptrdiff_t index) {
-  if (m_focusRing.empty()) {
-    m_focusIndex = -1;
-    return;
-  }
-  const std::ptrdiff_t count = static_cast<std::ptrdiff_t>(m_focusRing.size());
-  index = ((index % count) + count) % count;
-  m_focusIndex = index;
-  m_inputDispatcher.setFocus(m_focusRing[static_cast<std::size_t>(index)].area);
-  requestRedraw();
-}
-
-void GreeterSurface::moveFocus(int delta) {
-  if (m_focusRing.empty()) {
-    return;
-  }
-  if (m_focusIndex < 0) {
-    syncFocusIndexFromFocused();
-  }
-  const std::ptrdiff_t start = m_focusIndex < 0 ? 0 : m_focusIndex + delta;
-  setFocusIndex(start);
-}
-
-void GreeterSurface::activateFocused() {
-  if (m_focusRing.empty()) {
-    return;
-  }
-  if (m_focusIndex < 0 || m_focusIndex >= static_cast<std::ptrdiff_t>(m_focusRing.size())) {
-    syncFocusIndexFromFocused();
-  }
-  if (m_focusIndex < 0 || m_focusIndex >= static_cast<std::ptrdiff_t>(m_focusRing.size())) {
-    setFocusIndex(defaultFocusIndex());
-  }
-  if (m_focusIndex < 0 || m_focusIndex >= static_cast<std::ptrdiff_t>(m_focusRing.size())) {
-    return;
-  }
-  const auto& activate = m_focusRing[static_cast<std::size_t>(m_focusIndex)].activate;
-  if (activate) {
-    activate();
-  }
-}
-
-void GreeterSurface::applyMenuHighlight() {
-  std::vector<Box*>* rows = nullptr;
-  std::vector<Label*>* labels = nullptr;
-  std::size_t selected = 0;
-  if (m_sessionMenuOpen) {
-    rows = &m_sessionMenuRows;
-    labels = &m_sessionMenuLabels;
-    selected = m_selectedSession;
-  } else if (m_schemeMenuOpen) {
-    rows = &m_schemeMenuRows;
-    labels = &m_schemeMenuLabels;
-    selected = m_selectedScheme;
-  } else if (m_userMenuOpen) {
-    rows = &m_userMenuRows;
-    labels = &m_userMenuLabels;
-    if (m_selectedUser < m_users.size()) {
-      for (std::size_t i = 0; i < m_userMenuFilteredIndices.size(); ++i) {
-        if (m_userMenuFilteredIndices[i] == m_selectedUser) {
-          selected = i;
-          break;
-        }
-      }
-    }
-  }
-
-  if (rows == nullptr || rows->empty()) {
-    m_menuHighlight = -1;
-    return;
-  }
-
-  const std::ptrdiff_t count = static_cast<std::ptrdiff_t>(rows->size());
-  const std::size_t totalCount = m_userMenuOpen ? m_userMenuFilteredIndices.size()
-      : m_sessionMenuOpen                       ? m_sessions.size()
-                                                : m_schemeNames.size();
-  if (m_userMenuOpen) {
-    const std::size_t matchCount = m_userMenuFilteredIndices.size();
-    if (matchCount == 0) {
-      m_menuHighlight = -1;
-      return;
-    }
-    if (m_menuHighlight < 0 || static_cast<std::size_t>(m_menuHighlight) >= matchCount) {
-      m_menuHighlight = static_cast<std::ptrdiff_t>(std::min(selected, matchCount - 1));
-    }
-  } else if (m_menuHighlight < 0 || static_cast<std::size_t>(m_menuHighlight) >= totalCount) {
-    m_menuHighlight = static_cast<std::ptrdiff_t>(std::min(selected, totalCount - 1));
-  }
-
-  for (std::ptrdiff_t i = 0; i < count; ++i) {
-    const std::size_t index = static_cast<std::size_t>(i);
-    Box* row = (*rows)[index];
-    if (row == nullptr) {
-      continue;
-    }
-
-    const MenuScroll* scroll = activeMenuScroll();
-    const std::size_t filteredIndex = (m_userMenuOpen          ? m_userMenuScrollOffset
-                                           : scroll != nullptr ? scroll->offset
-                                                               : 0)
-        + index;
-    const bool highlighted = filteredIndex == static_cast<std::size_t>(m_menuHighlight);
-    const bool isSelected = m_userMenuOpen ? (filteredIndex < m_userMenuFilteredIndices.size()
-                                              && m_userMenuFilteredIndices[filteredIndex] == m_selectedUser)
-                                           : (filteredIndex == selected);
-    const float borderWidth = Style::borderWidth();
-    const float panelRadius = Style::scaledRadiusLg();
-    const float rowCorner = m_userMenuOpen ? Style::scaledRadiusSm() : panelRadius - borderWidth;
-    Radii rowRadius(0.0f);
-    if (m_userMenuOpen) {
-      rowRadius = Radii(rowCorner);
-    } else if (count == 1) {
-      rowRadius = Radii(panelRadius - borderWidth);
-    } else if (i == 0) {
-      rowRadius = Radii(panelRadius - borderWidth, panelRadius - borderWidth, 0.0f, 0.0f);
-    } else if (i == count - 1) {
-      rowRadius = Radii(0.0f, 0.0f, panelRadius - borderWidth, panelRadius - borderWidth);
-    }
-
-    Color rowFill = highlighted ? colorForRole(ColorRole::Secondary) : colorForRole(ColorRole::SurfaceVariant);
-    Color labelColor = colorForRole(ColorRole::OnSurface);
-    Color iconColor = colorForRole(ColorRole::OnSurfaceVariant);
-    if (m_userMenuOpen) {
-      if (highlighted) {
-        rowFill = colorForRole(ColorRole::Primary);
-        labelColor = colorForRole(ColorRole::OnPrimary);
-        iconColor = colorForRole(ColorRole::OnPrimary);
-      } else if (isSelected) {
-        rowFill = colorForRole(ColorRole::Primary, 0.16f);
-        labelColor = colorForRole(ColorRole::Primary);
-      } else {
-        rowFill = colorForRole(ColorRole::SurfaceVariant, 0.01f);
-      }
-    } else if (highlighted) {
-      labelColor = colorForRole(ColorRole::OnSecondary);
-    } else if (isSelected) {
-      labelColor = colorForRole(ColorRole::Primary);
-    }
-
-    row->setStyle(
-        RoundedRectStyle{
-            .fill = rowFill,
-            .fillMode = FillMode::Solid,
-            .radius = rowRadius,
-        }
-    );
-
-    if (labels != nullptr && index < labels->size()) {
-      Label* label = (*labels)[index];
-      if (label == nullptr) {
-        continue;
-      }
-      label->setColor(labelColor);
-    }
-    if (m_userMenuOpen && index < m_userMenuRowIcons.size() && m_userMenuRowIcons[index] != nullptr) {
-      m_userMenuRowIcons[index]->setColor(iconColor);
-    }
-  }
-
-  requestRedraw();
-}
-
-void GreeterSurface::moveMenuHighlight(int delta) {
-  if (m_userMenuOpen) {
-    const std::size_t count = m_userMenuFilteredIndices.size();
-    if (count == 0) {
-      return;
-    }
-    if (m_menuHighlight < 0) {
-      m_menuHighlight = 0;
-    }
-    const std::size_t current = static_cast<std::size_t>(m_menuHighlight);
-    const std::size_t next = (current + count + static_cast<std::size_t>(delta)) % count;
-    m_menuHighlight = static_cast<std::ptrdiff_t>(next);
-    const std::size_t previousScroll = m_userMenuScrollOffset;
-    ensureUserMenuHighlightVisible();
-    if (m_userMenuScrollOffset != previousScroll) {
-      refreshUserMenuRows();
-    } else {
-      applyMenuHighlight();
-      requestRedraw();
-    }
-    return;
-  }
-
-  MenuScroll* scroll = activeMenuScroll();
-  if (scroll == nullptr || scroll->visibleCount == 0) {
-    return;
-  }
-  const std::ptrdiff_t count =
-      static_cast<std::ptrdiff_t>(m_sessionMenuOpen ? m_sessions.size() : m_schemeNames.size());
-  if (m_menuHighlight < 0) {
-    m_menuHighlight = 0;
-  }
-  m_menuHighlight = (((m_menuHighlight + delta) % count) + count) % count;
-  const std::size_t highlight = static_cast<std::size_t>(m_menuHighlight);
-  const std::size_t previousScroll = scroll->offset;
-  if (highlight < scroll->offset) {
-    scroll->offset = highlight;
-  } else if (highlight >= scroll->offset + scroll->visibleCount) {
-    scroll->offset = highlight + 1 - scroll->visibleCount;
-  }
-  if (scroll->offset != previousScroll) {
-    requestLayout();
-    return;
-  }
-  applyMenuHighlight();
-  requestRedraw();
-}
-
-void GreeterSurface::ensureUserMenuHighlightVisible() {
-  if (!m_userMenuOpen || m_userMenuFilteredIndices.empty()) {
-    return;
-  }
-
-  const std::size_t matchCount = m_userMenuFilteredIndices.size();
-  const std::size_t visibleCount = std::min(matchCount, kUserDropdownMaxVisibleRows);
-  const std::size_t maxScroll = matchCount > visibleCount ? matchCount - visibleCount : 0;
-
-  if (m_menuHighlight < 0) {
-    m_menuHighlight = 0;
-  }
-  const std::size_t highlight = static_cast<std::size_t>(m_menuHighlight);
-  if (highlight < m_userMenuScrollOffset) {
-    m_userMenuScrollOffset = highlight;
-  } else if (visibleCount > 0 && highlight >= m_userMenuScrollOffset + visibleCount) {
-    m_userMenuScrollOffset = highlight + 1 - visibleCount;
-  }
-  m_userMenuScrollOffset = std::min(m_userMenuScrollOffset, maxScroll);
-}
-
-void GreeterSurface::scrollUserMenu(int delta) {
-  if (!m_userMenuOpen || m_userMenuFilteredIndices.empty() || delta == 0) {
-    return;
-  }
-
-  const std::size_t matchCount = m_userMenuFilteredIndices.size();
-  const std::size_t visibleCount = std::min(matchCount, kUserDropdownMaxVisibleRows);
-  const std::size_t maxScroll = matchCount > visibleCount ? matchCount - visibleCount : 0;
-  if (maxScroll == 0) {
-    return;
-  }
-
-  const std::size_t previousScroll = m_userMenuScrollOffset;
-  if (delta < 0) {
-    const std::size_t step = static_cast<std::size_t>(-delta);
-    m_userMenuScrollOffset = step >= m_userMenuScrollOffset ? 0 : m_userMenuScrollOffset - step;
-  } else {
-    const std::size_t step = static_cast<std::size_t>(delta);
-    m_userMenuScrollOffset = std::min(m_userMenuScrollOffset + step, maxScroll);
-  }
-
-  if (m_userMenuScrollOffset != previousScroll) {
-    refreshUserMenuRows();
-  }
-}
-
-GreeterSurface::MenuScroll* GreeterSurface::activeMenuScroll() {
-  return m_sessionMenuOpen ? &m_sessionMenuScroll : m_schemeMenuOpen ? &m_schemeMenuScroll : nullptr;
-}
-
-void GreeterSurface::scrollSelectorMenu(int delta) {
-  MenuScroll* scroll = activeMenuScroll();
-  if (scroll == nullptr || scroll->visibleCount == 0 || delta == 0) {
-    return;
-  }
-  const std::size_t count = m_sessionMenuOpen ? m_sessions.size() : m_schemeNames.size();
-  const std::ptrdiff_t maxOffset = static_cast<std::ptrdiff_t>(count - scroll->visibleCount);
-  const std::size_t offset = static_cast<std::size_t>(
-      std::clamp(static_cast<std::ptrdiff_t>(scroll->offset) + delta, std::ptrdiff_t{0}, maxOffset)
-  );
-  if (offset != scroll->offset) {
-    scroll->offset = offset;
-    requestLayout();
-  }
-}
-
-void GreeterSurface::invalidateMenuPointers() {
-  // Rows are transient, but the shared Noctalia scrollbar stays alive through
-  // relayouts so its pointer capture and hover animation can continue.
-  const MenuScroll* scroll = activeMenuScroll();
-  m_inputDispatcher.invalidateTransientPointers(scroll != nullptr ? scroll->bar : nullptr);
-}
-
-bool GreeterSurface::pointerInUserMenuScrollArea(float x, float y) const {
-  const auto inRect = [x, y](const Node* node) {
-    if (node == nullptr || !node->visible()) {
-      return false;
-    }
-    return x >= node->x() && y >= node->y() && x <= node->x() + node->width() && y <= node->y() + node->height();
-  };
-
-  return inRect(m_userMenuPanel) || inRect(m_userSelectBox);
-}
-
-void GreeterSurface::activateMenuHighlight() {
-  if (m_menuHighlight < 0) {
-    return;
-  }
-  const std::size_t idx = static_cast<std::size_t>(m_menuHighlight);
-  if (m_sessionMenuOpen) {
-    selectSession(idx);
-  } else if (m_schemeMenuOpen) {
-    selectScheme(idx);
-  } else if (m_userMenuOpen) {
-    if (idx < m_userMenuFilteredIndices.size()) {
-      enterPasswordStep(m_userMenuFilteredIndices[idx]);
-    }
-  }
-}
-
-bool GreeterSurface::handleNavigationKey(std::uint32_t sym, std::uint32_t utf32, std::uint32_t modifiers) {
+bool GreeterSurface::handleNavigationKey(std::uint32_t sym, std::uint32_t /*utf32*/, std::uint32_t modifiers) {
   if (m_authenticating) {
     return false;
   }
-  const bool shift = (modifiers & KeyMod::Shift) != 0;
-  const bool backward = shift || sym == XKB_KEY_ISO_Left_Tab;
-
-  // F3 / F7 jump straight to the session / color-scheme menus from anywhere
-  // (even from inside the password field or with another menu open).
+  // F3 / Shift+F3: sesión siguiente / anterior. Todo lo demás va al campo de contraseña.
   if (KeySymbol::isF3(sym)) {
-    if (m_sessionMenuOpen) {
-      closeMenusAndRestoreFocus();
-    } else {
-      if (m_sessionSelectArea != nullptr) {
-        m_inputDispatcher.setFocus(m_sessionSelectArea);
-      }
-      toggleSessionMenu();
-    }
+    stepSession((modifiers & KeyMod::Shift) != 0 ? m_sessions.size() - 1 : 1);
     return true;
-  }
-  if (KeySymbol::isF7(sym)) {
-    // Don't respond if the scheme selector is hidden
-    if (m_schemeSelectorPosition == "hidden") {
-      return true;
-    }
-    if (m_schemeMenuOpen) {
-      closeMenusAndRestoreFocus();
-    } else {
-      if (m_schemeSelectArea != nullptr) {
-        m_inputDispatcher.setFocus(m_schemeSelectArea);
-      }
-      toggleSchemeMenu();
-    }
-    return true;
-  }
-
-  // A dropdown menu being open takes total precedence over the focus ring.
-  if (menuOpen()) {
-    if (m_userMenuOpen) {
-      InputArea* searchArea = m_userMenuSearchField != nullptr ? m_userMenuSearchField->inputArea() : nullptr;
-      const bool searchFocused = searchArea != nullptr && InputArea::getFocused() == searchArea;
-
-      if (isTextEditKey(sym, utf32, modifiers) && searchArea != nullptr) {
-        if (!searchFocused) {
-          m_inputDispatcher.setFocus(searchArea);
-        }
-        return false;
-      }
-
-      if (searchFocused) {
-        if (handleUserMenuSearchKey(sym, false)) {
-          return true;
-        }
-        return false;
-      }
-    }
-
-    if (KeySymbol::isUp(sym)) {
-      moveMenuHighlight(-1);
-      return true;
-    }
-    if (KeySymbol::isDown(sym)) {
-      moveMenuHighlight(1);
-      return true;
-    }
-    if (KeySymbol::isEnter(sym)) {
-      activateMenuHighlight();
-      return true;
-    }
-    if (KeySymbol::isEscape(sym)) {
-      closeMenusAndRestoreFocus();
-      return true;
-    }
-    if (KeySymbol::isTab(sym)) {
-      closeMenusAndRestoreFocus();
-      moveFocus(backward ? -1 : 1);
-      return true;
-    }
-    return true; // swallow everything else while a menu is open
-  }
-
-  // Tab / Shift+Tab cycles the focus ring, even from inside the password field.
-  if (KeySymbol::isTab(sym)) {
-    moveFocus(backward ? -1 : 1);
-    return true;
-  }
-
-  // Escape leaves the password step.
-  if (KeySymbol::isEscape(sym)) {
-    if (m_passwordVisible) {
-      runBackAction();
-      return true;
-    }
-    return false;
-  }
-
-  // Let the password field keep all of its editing/submit keys.
-  InputArea* focused = InputArea::getFocused();
-  if (m_passwordField != nullptr && focused == m_passwordField->inputArea()) {
-    return false;
-  }
-
-  if (!menuOpen()
-      && !m_passwordVisible
-      && showsUserDropdown()
-      && m_userSelectArea != nullptr
-      && focused == m_userSelectArea) {
-    if (KeySymbol::isDown(sym) || KeySymbol::isUp(sym)) {
-      openUserMenu();
-      requestLayout();
-      return true;
-    }
-  }
-
-  // Non-text focusables: arrows move focus, Enter/Space activate.
-  if (KeySymbol::isUp(sym)) {
-    moveFocus(-1);
-    return true;
-  }
-  if (KeySymbol::isDown(sym)) {
-    moveFocus(1);
-    return true;
-  }
-  if (KeySymbol::isEnter(sym) || KeySymbol::isSpace(sym)) {
-    if (InputArea::getFocused() == nullptr && !m_focusRing.empty()) {
-      setFocusIndex(defaultFocusIndex());
-    }
-    activateFocused();
-    return true;
-  }
-
-  return false;
-}
-
-void GreeterSurface::clearUserMenuRows() {
-  if (m_userMenuEmptyLabel != nullptr) {
-    (void)m_root.removeChild(m_userMenuEmptyLabel);
-    m_userMenuEmptyLabel = nullptr;
-  }
-  if (m_userMenuPanel != nullptr) {
-    (void)m_root.removeChild(m_userMenuPanel);
-    m_userMenuPanel = nullptr;
-  }
-  for (auto* label : m_userMenuLabels) {
-    (void)m_root.removeChild(label);
-  }
-  for (auto* icon : m_userMenuRowIcons) {
-    (void)m_root.removeChild(icon);
-  }
-  for (auto* area : m_userMenuAreas) {
-    (void)m_root.removeChild(area);
-  }
-  for (auto* row : m_userMenuRows) {
-    (void)m_root.removeChild(row);
-  }
-  m_userMenuLabels.clear();
-  m_userMenuRowIcons.clear();
-  m_userMenuAreas.clear();
-  m_userMenuRows.clear();
-}
-
-void GreeterSurface::clearUserMenu() {
-  invalidateMenuPointers();
-  clearUserMenuRows();
-  m_userMenuSearchQuery.clear();
-  m_userMenuScrollOffset = 0;
-  if (m_userMenuSearchField != nullptr) {
-    m_userMenuSearchField->setValue("");
-    m_userMenuSearchField->setVisible(false);
-  }
-  m_userMenuFilteredIndices.clear();
-}
-
-void GreeterSurface::clearSessionMenu() {
-  invalidateMenuPointers();
-  if (m_sessionMenuPanel != nullptr) {
-    (void)m_root.removeChild(m_sessionMenuPanel);
-    m_sessionMenuPanel = nullptr;
-  }
-  for (auto* label : m_sessionMenuLabels) {
-    (void)m_root.removeChild(label);
-  }
-  for (auto* area : m_sessionMenuAreas) {
-    (void)m_root.removeChild(area);
-  }
-  for (auto* row : m_sessionMenuRows) {
-    (void)m_root.removeChild(row);
-  }
-  m_sessionMenuLabels.clear();
-  m_sessionMenuAreas.clear();
-  m_sessionMenuRows.clear();
-  if (!m_sessionMenuOpen && m_sessionMenuScroll.bar != nullptr) {
-    (void)m_root.removeChild(m_sessionMenuScroll.bar);
-    m_sessionMenuScroll = {};
-  }
-}
-
-void GreeterSurface::clearSchemeMenu() {
-  invalidateMenuPointers();
-  if (m_schemeMenuPanel != nullptr) {
-    (void)m_root.removeChild(m_schemeMenuPanel);
-    m_schemeMenuPanel = nullptr;
-  }
-  for (auto* label : m_schemeMenuLabels) {
-    (void)m_root.removeChild(label);
-  }
-  for (auto* area : m_schemeMenuAreas) {
-    (void)m_root.removeChild(area);
-  }
-  for (auto* row : m_schemeMenuRows) {
-    (void)m_root.removeChild(row);
-  }
-  m_schemeMenuLabels.clear();
-  m_schemeMenuAreas.clear();
-  m_schemeMenuRows.clear();
-  if (!m_schemeMenuOpen && m_schemeMenuScroll.bar != nullptr) {
-    (void)m_root.removeChild(m_schemeMenuScroll.bar);
-    m_schemeMenuScroll = {};
-  }
-}
-
-bool GreeterSurface::handleUserMenuSearchKey(std::uint32_t sym, bool preedit) {
-  if (preedit) {
-    return false;
-  }
-  if (KeySymbol::isEscape(sym)) {
-    closeMenusAndRestoreFocus();
-    return true;
-  }
-  if (KeySymbol::isUp(sym)) {
-    moveMenuHighlight(-1);
-    return true;
-  }
-  if (KeySymbol::isDown(sym)) {
-    moveMenuHighlight(1);
-    return true;
-  }
-  if (KeySymbol::isEnter(sym)) {
-    if (m_userMenuFilteredIndices.size() == 1) {
-      enterPasswordStep(m_userMenuFilteredIndices.front());
-      return true;
-    }
-    if (m_menuHighlight < 0 && !m_userMenuFilteredIndices.empty()) {
-      m_menuHighlight = 0;
-    }
-    if (m_menuHighlight >= 0) {
-      activateMenuHighlight();
-      return true;
-    }
   }
   return false;
-}
-
-void GreeterSurface::layoutUserMenuSearchField(float x, float y, float w, float h) {
-  if (m_userMenuSearchField == nullptr || m_renderContext == nullptr) {
-    return;
-  }
-
-  if (m_userMenuSearchField->value() != m_userMenuSearchQuery) {
-    m_userMenuSearchField->setValue(m_userMenuSearchQuery);
-  }
-  m_userMenuSearchField->setControlHeight(h);
-  m_userMenuSearchField->setPosition(x, y);
-  m_userMenuSearchField->setSize(w, h);
-  m_userMenuSearchField->layout(*m_renderContext);
-}
-
-void GreeterSurface::refreshUserMenuRows() {
-  if (!m_userMenuOpen || m_users.empty() || m_userSelectBox == nullptr || m_renderContext == nullptr) {
-    return;
-  }
-
-  auto* renderer = m_renderContext;
-  m_userMenuFilteredIndices = filterUserIndices(m_users, m_userMenuSearchQuery);
-
-  const float anchorX = m_userSelectBox->x();
-  const float anchorW = m_userSelectBox->width();
-  const float rowH = Style::controlHeight();
-  const float borderWidth = Style::borderWidth();
-  const float panelRadius = Style::scaledRadiusLg();
-  const float rowRadius = Style::scaledRadiusSm();
-  const float rowIconReserve = Style::spaceMd() + Style::fontSizeBody() + kUserMenuRowIconGap;
-
-  float contentW = anchorW;
-  for (const std::size_t userIndex : m_userMenuFilteredIndices) {
-    const float textW = renderer->measureText(m_users[userIndex], Style::fontSizeBody()).width;
-    contentW = std::max(contentW, rowIconReserve + textW + 2.0f * kUserMenuPadding);
-  }
-  const float screenW = m_root.width();
-  const float maxW = std::max(anchorW, screenW - 2.0f * Style::spaceLg());
-  const float panelW = std::min(contentW, maxW);
-  const float panelX =
-      std::clamp(anchorX, Style::spaceLg(), std::max(Style::spaceLg(), screenW - Style::spaceLg() - panelW));
-  const float panelY = m_userSelectBox->y() + m_userSelectBox->height() + Style::spaceXs();
-  const float innerX = panelX + borderWidth + kUserMenuPadding;
-  const float innerW = panelW - 2.0f * borderWidth - 2.0f * kUserMenuPadding;
-  const float listTop = panelY + borderWidth + kUserMenuPadding;
-  clearUserMenuRows();
-
-  const std::size_t matchCount = m_userMenuFilteredIndices.size();
-  if (matchCount == 0) {
-    m_userMenuScrollOffset = 0;
-    const float panelH = kUserMenuPadding + rowH + kUserMenuPadding + 2.0f * borderWidth;
-
-    auto panel = std::make_unique<Box>();
-    m_userMenuPanel = panel.get();
-    m_userMenuPanel->setZIndex(50);
-    m_userMenuPanel->setHitTestVisible(false);
-    m_root.addChild(std::move(panel));
-    m_userMenuPanel->setPosition(panelX, panelY);
-    m_userMenuPanel->setSize(panelW, panelH);
-    m_userMenuPanel->setStyle(
-        RoundedRectStyle{
-            .fill = colorForRole(ColorRole::Surface),
-            .border = colorForRole(ColorRole::Outline),
-            .fillMode = FillMode::Solid,
-            .radius = panelRadius,
-            .softness = 1.0f,
-            .borderWidth = borderWidth,
-        }
-    );
-
-    auto empty = std::make_unique<Label>();
-    m_userMenuEmptyLabel = empty.get();
-    m_userMenuEmptyLabel->setText("No users found");
-    m_userMenuEmptyLabel->setFontSize(Style::fontSizeBody());
-    m_userMenuEmptyLabel->setColor(colorForRole(ColorRole::OnSurfaceVariant));
-    m_userMenuEmptyLabel->setZIndex(52);
-    m_root.addChild(std::move(empty));
-    m_userMenuEmptyLabel->measure(*renderer);
-    m_userMenuEmptyLabel->setPosition(innerX, listTop + std::round((rowH - m_userMenuEmptyLabel->height()) * 0.5f));
-    m_menuHighlight = -1;
-    applyMenuHighlight();
-    requestRedraw();
-    return;
-  }
-
-  if (m_menuHighlight < 0 || static_cast<std::size_t>(m_menuHighlight) >= matchCount) {
-    m_menuHighlight = 0;
-    if (m_selectedUser < m_users.size()) {
-      for (std::size_t i = 0; i < matchCount; ++i) {
-        if (m_userMenuFilteredIndices[i] == m_selectedUser) {
-          m_menuHighlight = static_cast<std::ptrdiff_t>(i);
-          break;
-        }
-      }
-    }
-  }
-  ensureUserMenuHighlightVisible();
-
-  const std::size_t visibleCount = std::min(kUserDropdownMaxVisibleRows, matchCount - m_userMenuScrollOffset);
-  const float listH = rowH * static_cast<float>(visibleCount)
-      + kUserMenuRowGap * static_cast<float>(visibleCount > 0 ? visibleCount - 1 : 0);
-  const float panelH = kUserMenuPadding + listH + kUserMenuPadding + 2.0f * borderWidth;
-
-  auto panel = std::make_unique<Box>();
-  m_userMenuPanel = panel.get();
-  m_userMenuPanel->setZIndex(50);
-  m_userMenuPanel->setHitTestVisible(false);
-  m_root.addChild(std::move(panel));
-  m_userMenuPanel->setPosition(panelX, panelY);
-  m_userMenuPanel->setSize(panelW, panelH);
-  m_userMenuPanel->setStyle(
-      RoundedRectStyle{
-          .fill = colorForRole(ColorRole::Surface),
-          .border = colorForRole(ColorRole::Outline),
-          .fillMode = FillMode::Solid,
-          .radius = panelRadius,
-          .softness = 1.0f,
-          .borderWidth = borderWidth,
-      }
-  );
-
-  for (std::size_t visibleIndex = 0; visibleIndex < visibleCount; ++visibleIndex) {
-    const std::size_t filteredIndex = m_userMenuScrollOffset + visibleIndex;
-    const std::size_t userIndex = m_userMenuFilteredIndices[filteredIndex];
-    const float rowY = listTop + (rowH + kUserMenuRowGap) * static_cast<float>(visibleIndex);
-    const float rowW = innerW;
-
-    auto row = std::make_unique<Box>();
-    auto* rowPtr = row.get();
-    rowPtr->setZIndex(51);
-    rowPtr->setHitTestVisible(false);
-    rowPtr->setPosition(innerX, rowY);
-    rowPtr->setSize(rowW, rowH);
-    rowPtr->setStyle(
-        RoundedRectStyle{
-            .fill = colorForRole(ColorRole::SurfaceVariant, 0.01f),
-            .fillMode = FillMode::Solid,
-            .radius = rowRadius,
-        }
-    );
-    m_root.addChild(std::move(row));
-    m_userMenuRows.push_back(rowPtr);
-
-    auto icon = std::make_unique<Glyph>();
-    auto* iconPtr = icon.get();
-    iconPtr->setGlyph("user");
-    iconPtr->setGlyphSize(Style::fontSizeBody());
-    iconPtr->setColor(colorForRole(ColorRole::OnSurfaceVariant));
-    iconPtr->setHitTestVisible(false);
-    iconPtr->setZIndex(52);
-    m_root.addChild(std::move(icon));
-    (void)iconPtr->measure(*renderer);
-    const auto iconMetrics = renderer->measureGlyph(iconPtr->codepoint(), iconPtr->fontSize());
-    const float iconW = iconMetrics.right - iconMetrics.left;
-    const float iconY = rowY + std::round(rowH * 0.5f - (iconMetrics.top + iconMetrics.bottom) * 0.5f);
-    iconPtr->setPosition(innerX + Style::spaceSm(), iconY);
-    m_userMenuRowIcons.push_back(iconPtr);
-
-    auto label = std::make_unique<Label>();
-    auto* labelPtr = label.get();
-    labelPtr->setText(m_users[userIndex]);
-    labelPtr->setFontSize(Style::fontSizeBody());
-    labelPtr->setColor(colorForRole(ColorRole::OnSurface));
-    labelPtr->setZIndex(52);
-    m_root.addChild(std::move(label));
-    labelPtr->measure(*renderer);
-    labelPtr->setPosition(
-        innerX + Style::spaceSm() + iconW + kUserMenuRowIconGap, rowY + std::round((rowH - labelPtr->height()) * 0.5f)
-    );
-    m_userMenuLabels.push_back(labelPtr);
-
-    auto area = std::make_unique<InputArea>();
-    auto* areaPtr = area.get();
-    areaPtr->setFocusable(false);
-    areaPtr->setZIndex(53);
-    areaPtr->setOnEnter([this, filteredIndex](const InputArea::PointerData&) {
-      m_menuHighlight = static_cast<std::ptrdiff_t>(filteredIndex);
-      applyMenuHighlight();
-    });
-    areaPtr->setOnPress([this, userIndex](const InputArea::PointerData& data) {
-      if (!data.pressed || data.button != BTN_LEFT) {
-        return;
-      }
-      enterPasswordStep(userIndex);
-    });
-    m_root.addChild(std::move(area));
-    areaPtr->setPosition(innerX, rowY);
-    areaPtr->setSize(rowW, rowH);
-    m_userMenuAreas.push_back(areaPtr);
-  }
-
-  applyMenuHighlight();
-  requestRedraw();
-}
-
-void GreeterSurface::rebuildUserMenu() {
-  if (!m_userMenuOpen || m_users.empty()) {
-    clearUserMenu();
-    return;
-  }
-
-  refreshUserMenuRows();
-}
-
-void GreeterSurface::buildMenu(
-    const std::vector<std::string>& names, std::size_t selected, Box* anchor, bool upward, bool rightAlign, int zBase,
-    Box*& panelOut, std::vector<Box*>& rows, std::vector<Label*>& labels, std::vector<InputArea*>& areas,
-    MenuScroll& scroll, std::function<void(std::size_t)> onSelect
-) {
-  const std::size_t count = names.size();
-  if (anchor == nullptr || count == 0) {
-    return;
-  }
-
-  const float rowH = Style::controlHeightSm();
-  const float borderWidth = Style::borderWidth();
-  const float margin = Style::spaceLg();
-  const float screenX = m_outputViewportActive ? m_viewportX : 0.0f;
-  const float screenY = m_outputViewportActive ? m_viewportY : 0.0f;
-  const float screenW = m_outputViewportActive ? m_viewportWidth : m_root.width();
-  const float screenH = m_outputViewportActive ? m_viewportHeight : m_root.height();
-  const float top = screenY + margin;
-  const float bottom = screenY + screenH - margin;
-  const float above = std::max(0.0f, anchor->y() - Style::spaceXs() - top);
-  const float below = std::max(0.0f, bottom - anchor->y() - anchor->height() - Style::spaceXs());
-  const float desiredH = rowH * static_cast<float>(std::min(count, kSelectorMenuMaxVisibleRows)) + 2.0f * borderWidth;
-  if (desiredH > (upward ? above : below) && (upward ? below : above) > (upward ? above : below)) {
-    upward = !upward;
-  }
-  const float availableH = upward ? above : below;
-  const std::size_t availableRows =
-      static_cast<std::size_t>(std::max(1.0f, std::floor((availableH - 2.0f * borderWidth) / rowH)));
-  scroll.visibleCount = std::min({count, kSelectorMenuMaxVisibleRows, availableRows});
-  const std::size_t maxOffset = count - scroll.visibleCount;
-  if (m_menuHighlight < 0) {
-    m_menuHighlight = static_cast<std::ptrdiff_t>(std::min(selected, count - 1));
-    const std::size_t highlight = static_cast<std::size_t>(m_menuHighlight);
-    scroll.offset = highlight >= scroll.visibleCount ? highlight + 1 - scroll.visibleCount : 0;
-  }
-  scroll.offset = std::min(scroll.offset, maxOffset);
-
-  const float gutter = maxOffset > 0 ? (Style::scrollbarWidth + Style::scrollbarGap) * Style::uiScale() : 0.0f;
-  float contentW = anchor->width();
-  for (const auto& name : names) {
-    const float textW = m_renderContext->measureText(name, Style::fontSizeBody()).width;
-    contentW = std::max(contentW, textW + 2.0f * Style::spaceMd() + gutter + 2.0f * borderWidth);
-  }
-  const float w = std::min(contentW, std::max(1.0f, screenW - 2.0f * margin));
-  const float minX = screenX + margin;
-  const float maxX = std::max(minX, screenX + screenW - margin - w);
-  const float x = std::clamp(rightAlign ? anchor->x() + anchor->width() - w : anchor->x(), minX, maxX);
-  const float listH = rowH * static_cast<float>(scroll.visibleCount);
-  const float panelH = listH + 2.0f * borderWidth;
-  const float y = std::clamp(
-      upward ? anchor->y() - panelH - Style::spaceXs() : anchor->y() + anchor->height() + Style::spaceXs(), top,
-      std::max(top, bottom - panelH)
-  );
-
-  auto panel = std::make_unique<Box>();
-  panelOut = panel.get();
-  panelOut->setZIndex(zBase);
-  panelOut->setHitTestVisible(false);
-  m_root.addChild(std::move(panel));
-  panelOut->setPosition(x, y);
-  panelOut->setSize(w, panelH);
-  panelOut->setStyle(
-      RoundedRectStyle{
-          .fill = colorForRole(ColorRole::SurfaceVariant),
-          .border = colorForRole(ColorRole::Outline),
-          .fillMode = FillMode::Solid,
-          .radius = Style::scaledRadiusLg(),
-          .softness = 1.0f,
-          .borderWidth = borderWidth,
-      }
-  );
-
-  const float panelRadius = Style::scaledRadiusLg();
-  for (std::size_t visibleIndex = 0; visibleIndex < scroll.visibleCount; ++visibleIndex) {
-    const std::size_t i = scroll.offset + visibleIndex;
-    const float rowX = x + borderWidth;
-    const float rowY = y + borderWidth + rowH * static_cast<float>(visibleIndex);
-    const float rowW = w - 2.0f * borderWidth - gutter;
-
-    auto row = std::make_unique<Box>();
-    auto* rowPtr = row.get();
-    rowPtr->setZIndex(zBase + 1);
-    rowPtr->setPosition(rowX, rowY);
-    rowPtr->setSize(rowW, rowH);
-
-    Radii rowRadius(0.0f);
-    if (scroll.visibleCount == 1) {
-      rowRadius = Radii(panelRadius - borderWidth);
-    } else if (visibleIndex == 0) {
-      rowRadius = Radii(panelRadius - borderWidth, panelRadius - borderWidth, 0.0f, 0.0f);
-    } else if (visibleIndex == scroll.visibleCount - 1) {
-      rowRadius = Radii(0.0f, 0.0f, panelRadius - borderWidth, panelRadius - borderWidth);
-    }
-    rowPtr->setStyle(
-        RoundedRectStyle{
-            .fill = colorForRole(ColorRole::SurfaceVariant),
-            .fillMode = FillMode::Solid,
-            .radius = rowRadius,
-        }
-    );
-    m_root.addChild(std::move(row));
-    rows.push_back(rowPtr);
-
-    auto label = std::make_unique<Label>();
-    auto* labelPtr = label.get();
-    labelPtr->setText(names[i]);
-    labelPtr->setFontSize(Style::fontSizeBody());
-    labelPtr->setColor(colorForRole(ColorRole::OnSurface));
-    labelPtr->setMaxLines(1);
-    labelPtr->setMaxWidth(std::max(1.0f, rowW - 2.0f * Style::spaceMd()));
-    labelPtr->setZIndex(zBase + 2);
-    m_root.addChild(std::move(label));
-    labelPtr->measure(*m_renderContext);
-    labelPtr->setPosition(rowX + Style::spaceMd(), rowY + std::round((rowH - labelPtr->height()) * 0.5f));
-    labels.push_back(labelPtr);
-
-    auto area = std::make_unique<InputArea>();
-    auto* areaPtr = area.get();
-    areaPtr->setFocusable(true);
-    areaPtr->setZIndex(zBase + 3);
-    areaPtr->setOnEnter([this, i](const InputArea::PointerData&) {
-      m_menuHighlight = static_cast<std::ptrdiff_t>(i);
-      applyMenuHighlight();
-      requestRedraw();
-    });
-    areaPtr->setOnClick([onSelect, i](const InputArea::PointerData& data) {
-      if (data.button == BTN_LEFT) {
-        onSelect(i);
-      }
-    });
-    m_root.addChild(std::move(area));
-    areaPtr->setPosition(rowX, rowY);
-    areaPtr->setSize(rowW, rowH);
-    areas.push_back(areaPtr);
-  }
-
-  if (maxOffset > 0 && scroll.bar == nullptr) {
-    auto bar = std::make_unique<Scrollbar>();
-    scroll.bar = bar.get();
-    scroll.bar->setZIndex(zBase + 4);
-    m_root.addChild(std::move(bar));
-  }
-  if (scroll.bar != nullptr) {
-    scroll.bar->setContentScale(Style::uiScale());
-    scroll.bar->setTrackInset(std::min(panelRadius, listH * 0.25f));
-    scroll.bar->setPosition(x + w - borderWidth - Style::scrollbarWidth * Style::uiScale(), y + borderWidth);
-    scroll.bar->setSize(Style::scrollbarWidth * Style::uiScale(), listH);
-    scroll.bar->setOnScrollChanged([this, &scroll, rowH, maxOffset](float offset) {
-      const std::size_t rowOffset = std::min(maxOffset, static_cast<std::size_t>(std::round(offset / rowH)));
-      if (rowOffset != scroll.offset) {
-        scroll.offset = rowOffset;
-        requestLayout();
-      }
-    });
-    scroll.bar->update(listH, rowH * static_cast<float>(count), rowH * static_cast<float>(scroll.offset));
-  }
-}
-
-void GreeterSurface::rebuildSessionMenu() {
-  clearSessionMenu();
-  if (!m_sessionMenuOpen || m_sessions.empty()) {
-    return;
-  }
-  std::vector<std::string> names;
-  names.reserve(m_sessions.size());
-  for (const auto& session : m_sessions) {
-    names.push_back(session.name);
-  }
-  buildMenu(
-      names, m_selectedSession, m_sessionSelectBox, /*upward=*/false,
-      /*rightAlign=*/false, /*zBase=*/50, m_sessionMenuPanel, m_sessionMenuRows, m_sessionMenuLabels,
-      m_sessionMenuAreas, m_sessionMenuScroll, [this](std::size_t i) { selectSession(i); }
-  );
-}
-
-void GreeterSurface::rebuildSchemeMenu() {
-  clearSchemeMenu();
-  if (!m_schemeMenuOpen || m_schemeNames.empty()) {
-    return;
-  }
-  // Open upward when selector is at the bottom, downward otherwise
-  const bool upward = m_schemeSelectorPosition == "bottom-left" || m_schemeSelectorPosition == "bottom-right";
-  buildMenu(
-      m_schemeNames, m_selectedScheme, m_schemeSelectBox,
-      /*upward=*/upward,
-      /*rightAlign=*/true, /*zBase=*/60, m_schemeMenuPanel, m_schemeMenuRows, m_schemeMenuLabels, m_schemeMenuAreas,
-      m_schemeMenuScroll, [this](std::size_t i) { selectScheme(i); }
-  );
 }

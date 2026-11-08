@@ -75,11 +75,6 @@ bool Greeter::initialize(WaylandClient& client) {
 
   m_greetdClient.setRequestTimeout(std::chrono::seconds(prefs.authRequestTimeoutSec));
 
-  Input::setPasswordMaskStyle(
-      prefs.passwordMaskStyle == greeter::PasswordMaskStyle::RandomIcons ? Input::PasswordMaskStyle::RandomIcons
-                                                                         : Input::PasswordMaskStyle::CircleFilled
-  );
-
   GlyphRegistry::initialize();
 
   m_glSharedContext.initialize(client.display());
@@ -155,12 +150,6 @@ int Greeter::run(WaylandClient& client, const std::atomic<bool>& shutdownRequest
   while (!m_exitRequested && !shutdownRequested.load(std::memory_order_relaxed)) {
     client.repeatTick();
 
-    for (auto& view : m_views) {
-      if (view.surface->updateClock()) {
-        view.surface->requestLayout();
-      }
-    }
-
     if (client.flush() < 0) {
       kLog.error("Wayland flush failed");
       return 1;
@@ -168,12 +157,7 @@ int Greeter::run(WaylandClient& client, const std::atomic<bool>& shutdownRequest
 
     const int repeatMs = client.repeatPollTimeoutMs();
     const int requestMs = m_greetdClient.requestPollTimeoutMs();
-    const int eventTimeoutMs = repeatMs < 0 ? requestMs : requestMs < 0 ? repeatMs : std::min(repeatMs, requestMs);
-    const auto wallNow = std::chrono::system_clock::now().time_since_epoch();
-    const auto wallMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(wallNow).count();
-    const auto currentSecondRemainder = (wallMilliseconds % 1000 + 1000) % 1000;
-    const int clockTimeoutMs = 1000 - static_cast<int>(currentSecondRemainder);
-    const int timeoutMs = eventTimeoutMs < 0 ? clockTimeoutMs : std::min(eventTimeoutMs, clockTimeoutMs);
+    const int timeoutMs = repeatMs < 0 ? requestMs : requestMs < 0 ? repeatMs : std::min(repeatMs, requestMs);
 
     while (wl_display_prepare_read(display) != 0) {
       if (wl_display_dispatch_pending(display) < 0) {
@@ -545,10 +529,6 @@ void Greeter::setupInputCallbacks(WaylandClient& client) {
       onPointerMotion(*view->window, event.sx, event.sy);
       onPointerButton(*view->window, event.sx, event.sy, event.button, event.state != 0);
       break;
-    case PointerEvent::Type::Axis:
-      setActiveSurface(view->surface.get());
-      onPointerAxis(*view->window, event.sx, event.sy, event.axis, event.axisLines);
-      break;
     default:
       break;
     }
@@ -589,11 +569,6 @@ void Greeter::onPointerButton(GreeterWindow& window, double x, double y, std::ui
   }
 }
 
-void Greeter::onPointerAxis(GreeterWindow& window, double x, double y, std::uint32_t axis, float axisLines) {
-  if (View* view = viewForWindow(window)) {
-    view->surface->onPointerAxis(static_cast<float>(x), static_cast<float>(y), axis, axisLines);
-  }
-}
 
 void Greeter::onThemeChanged() {
   for (auto& view : m_views) {

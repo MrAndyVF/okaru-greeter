@@ -16,11 +16,6 @@ namespace greeter {
     int32_t y = 0;
   };
 
-  enum class PasswordMaskStyle : std::uint8_t {
-    Default,
-    RandomIcons,
-  };
-
   struct GreeterPreferences {
     std::optional<std::string> defaultSession;
     std::optional<std::string> defaultUser;
@@ -29,20 +24,8 @@ namespace greeter {
     std::optional<std::string> output;
     // Manual UI scale; unset or invalid → auto from display geometry.
     std::optional<float> scale;
-    PasswordMaskStyle passwordMaskStyle = PasswordMaskStyle::Default;
     bool allowEmptyPassword = false;
     int authRequestTimeoutSec = 60;
-    bool hideLogo = false;
-    // UI element positioning: "hidden", "bottom-left", "bottom-right", "top-left", "top-right"
-    std::optional<std::string> powerButtonsPosition;
-    std::optional<std::string> schemeSelectorPosition;
-    bool clockEnabled = true;
-    std::string clockPosition = "above-panel";
-    std::string clockTimeFormat = "{:%H:%M}";
-    std::string clockDateFormat = "%A, %x";
-    // Font sizes in logical pixels before UI scaling.
-    float clockTimeFontSize = 48.0f;
-    float clockDateFontSize = 14.0f;
   };
 
   [[nodiscard]] std::filesystem::path greeterConfPath();

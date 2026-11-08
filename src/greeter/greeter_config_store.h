@@ -44,11 +44,6 @@ namespace greeter::config {
 
     // Declarative scheme (overrides sync.toml last scheme when set).
     std::optional<std::string> appearanceScheme;
-    std::optional<std::string> appearancePasswordStyle;
-    std::optional<bool> appearanceHideLogo;
-    // UI element positioning: "hidden", "bottom-left", "bottom-right", "top-left", "top-right"
-    std::optional<std::string> appearancePowerButtonsPosition;
-    std::optional<std::string> appearanceSchemeSelectorPosition;
     // Optional palette/wallpaper/font; declarative values win over matching Sync values.
     GreeterTomlAppearance appearance;
 
@@ -78,13 +73,6 @@ namespace greeter::config {
 
     std::optional<bool> authAllowEmptyPassword;
     std::optional<int> authRequestTimeoutSec;
-
-    std::optional<bool> clockEnabled;
-    std::optional<std::string> clockPosition;
-    std::optional<std::string> clockTimeFormat;
-    std::optional<std::string> clockDateFormat;
-    std::optional<float> clockTimeFontSize;
-    std::optional<float> clockDateFontSize;
   };
 
   // Sync + UI mutable file (sync.toml). Never managed by Nix. Loses to greeter.toml.

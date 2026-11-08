@@ -9,14 +9,6 @@ trap 'rm -rf "$test_dir"' EXIT INT TERM
 mkdir "$test_dir/runtime" "$test_dir/state"
 chmod 700 "$test_dir/runtime"
 
-cat >"$test_dir/state/greeter.toml" <<'EOF'
-[appearance]
-hide_logo = true
-
-[clock]
-enabled = false
-EOF
-
 # The compositor does not propagate its child's exit code, so also require the
 # client's success marker. Keep the combined log available on any failure.
 if ! env \
