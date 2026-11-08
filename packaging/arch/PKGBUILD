@@ -7,7 +7,7 @@ arch=(x86_64)
 url='https://github.com/MrAndyVF/okaru-greeter'
 license=(MIT)
 depends=(bash cairo dbus fontconfig freetype2 gcc-libs glib2 glibc greetd libglvnd libinput libjxl librsvg libwebp
-         libxkbcommon libxml2 noto-fonts pango tomlplusplus wayland wlroots0.20)
+         libxkbcommon libxml2 noto-fonts pango tomlplusplus ttf-bigblueterminal-nerd wayland wlroots0.20)
 # Sin paquete -debug: nadie lo instala y solo infla el repositorio.
 options=('!debug')
 makedepends=(git meson ninja pkgconf wayland-protocols stb nlohmann-json)
