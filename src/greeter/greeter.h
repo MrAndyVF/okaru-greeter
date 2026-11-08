@@ -31,7 +31,6 @@ public:
   void onPointerLeave(GreeterWindow& window);
   void onPointerMotion(GreeterWindow& window, double x, double y);
   void onPointerButton(GreeterWindow& window, double x, double y, std::uint32_t button, bool pressed);
-  void onPointerAxis(GreeterWindow& window, double x, double y, std::uint32_t axis, float axisLines);
 
   void onThemeChanged();
 

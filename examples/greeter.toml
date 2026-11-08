@@ -23,14 +23,6 @@ default = "lysec"
 # Color scheme name: "Synced" (palette below or Sync sync.toml), or a builtin
 # like "Noctalia", "Catppuccin", .... Overrides last UI pick in sync.toml when set.
 scheme = "Synced"
-# Password mask: "default" (filled circles) or "random" (cycled glyph shapes).
-password_style = "random"
-# Hide the Noctalia brand logo on the login screen.
-hide_logo = false
-# Power controls: bottom-right (default), bottom-left, top-left, top-right, or hidden.
-power_buttons_position = "bottom-right"
-# Scheme picker: top-right (default), top-left, bottom-left, bottom-right, or hidden.
-scheme_selector_position = "top-right"
 theme_mode = "dark"
 corner_radius_scale = 1.0
 # Optional; empty / omit keeps the greeter default font.
@@ -71,20 +63,6 @@ fill_mode = "crop"
 # [appearance.wallpapers.DP-1]
 # path = "/var/lib/okaru-greeter/wallpaper-DP-1.webp"
 # fill_mode = "crop"
-
-[clock]
-# Show the clock (default true). The default position centers it above the login panel.
-enabled = true
-# above-panel (default), top-left, top-center, top-right, bottom-left, bottom-center, or bottom-right.
-# Corner occupants stack inward without overlapping: scheme selector, power buttons, then clock.
-# bottom-center uses the logo slot when hide_logo is true, or stacks above a visible logo.
-position = "above-panel"
-# Noctalia-compatible bare strftime or C++ chrono formats. Empty hides that line.
-time_format = "{:%H:%M}"
-date_format = "%A, %x"
-# Font sizes in logical pixels before UI scaling; positive integers or decimals.
-time_font_size = 48
-date_font_size = 14
 
 [output]
 # Use layout, transforms, and scales from sync.toml when not declared here (default true).

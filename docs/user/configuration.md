@@ -12,7 +12,6 @@ Administrator-controlled settings live in `/var/lib/okaru-greeter/greeter.toml`.
 - [Configuration reference](#configuration-reference)
 - [Default session](#default-session)
 - [Default user](#default-user)
-- [Clock](#clock)
 - [Full example](#full-example)
 
 ## Configuration files
@@ -54,22 +53,12 @@ Set these keys in `greeter.toml`. A command-line `--session` or `--user` value t
 | `[session].default` | Session selected on startup; overrides `[session].last` |
 | `[user].default` | Username selected on startup; opens the password step |
 | `[appearance].scheme` | Color scheme: `Synced` or a built-in name such as `OKARU` |
-| `[appearance].password_style` | Password mask: `default` or `random` |
-| `[appearance].hide_logo` | Hide the OKARU brand logo |
-| `[appearance].power_buttons_position` | Power controls: `bottom-right` (default), `bottom-left`, `top-left`, `top-right`, or `hidden` |
-| `[appearance].scheme_selector_position` | Scheme picker: `top-right` (default), `top-left`, `bottom-left`, `bottom-right`, or `hidden` |
 | `[appearance].theme_mode` | Theme mode for the Synced appearance, such as `dark` |
 | `[appearance].corner_radius_scale` | Corner-radius scale for the Synced appearance |
 | `[appearance].font_family` | Fontconfig family for the Synced appearance |
 | `[appearance.palette]` | Complete Synced palette; takes precedence over Sync appearance |
 | `[appearance.wallpaper]` | Default wallpaper `path`, `fill_mode`, and `fill_color`; `fill_color` also works without an image, and `fill_mode` accepts `center`, `crop`, `fit`, `stretch`, `repeat`, or `span` |
 | `[appearance.wallpapers.<connector>]` | Per-output wallpaper override using the same fill modes |
-| `[clock].enabled` | Show the clock; defaults to `true` |
-| `[clock].position` | `above-panel` (default), `top-left`, `top-center`, `top-right`, `bottom-left`, `bottom-center`, or `bottom-right` |
-| `[clock].time_format` | Time line format; defaults to `{:%H:%M}` |
-| `[clock].date_format` | Date line format; defaults to `%A, %x` |
-| `[clock].time_font_size` | Time font size before UI scaling; positive number, default `48` |
-| `[clock].date_font_size` | Date font size before UI scaling; positive number, default `14` |
 | `[output].name` | Connector or stable EDID identifier on which to pin the greeter |
 | `[output].use_synced_settings` | Use synced layout, transforms, and scales when not declared here; defaults to `true`. Set `false` to use declarative output settings and compositor defaults only |
 | `[output].layout` | Multi-monitor positions by connector or stable identifier; overrides synced layout |
@@ -158,29 +147,9 @@ To open directly on one account's password step:
 default = "alice"
 ```
 
-You can instead pass `--user alice` after the session wrapper's `--`. Use the exact login name from `/etc/passwd`. **Esc** or the back button returns to the user list.
+You can instead pass `--user alice` after the session wrapper's `--`. Use the exact login name from `/etc/passwd`. With several users, click the user name to switch to the next one.
 
-Resolution order is command-line `--user`, then `[user].default`, then the user picker.
-
-## Clock
-
-The clock is enabled by default and centered above the login panel. It uses the active palette's `on_surface` color for the time and `on_surface_variant` for the date, including when the **Synced** scheme is selected.
-
-```toml
-[clock]
-enabled = true
-position = "above-panel"
-time_format = "{:%H:%M}"
-date_format = "%A, %x"
-time_font_size = 48
-date_font_size = 14
-```
-
-Set `time_font_size` and `date_font_size` independently, in logical pixels before UI scaling. Both accept positive integers or decimals and follow the greeter's automatic or manual display scale. Omitted or invalid values use the defaults shown above.
-
-Formats accept the same forms as OKARU: bare `strftime` patterns such as `%H:%M`, or C++ chrono fields such as `{:%H:%M}`. Literal text is preserved, `\n` adds a line break, `%%` prints `%`, and `{{` / `}}` print braces. Common tokens include `%H` (24-hour hour), `%I` (12-hour hour), `%M` (minute), `%S` (second), `%p` (AM/PM), `%A` (weekday), `%B` (month), `%d` (day), `%Y` (year), and `%x` (locale date). Names and locale-preferred values follow the system's `LC_TIME`; the timezone follows the greeter host.
-
-Set either format to an empty string to hide only that line, or set `enabled = false` to disable the clock. The four corner positions use the same names as the power and scheme controls. When multiple elements use one corner, they stack inward in this order: scheme selector, power buttons, clock. `top-center` stays below a configuration-error banner. `bottom-center` occupies the logo's bottom-center slot when `[appearance].hide_logo = true`; with the logo visible, the clock stacks directly above it. On a display too short to fit a centered clock without touching the login panel, the date is omitted first; the clock is hidden only if the time line still cannot fit without overlap.
+Resolution order is command-line `--user`, then `[user].default`, then the first user in the list.
 
 ## Full example
 

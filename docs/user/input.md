@@ -5,7 +5,7 @@ sidebar:
   order: 5
 ---
 
-OKARU Greeter supports keyboard-only navigation and lets administrators configure the keyboard layout, Num Lock state, and cursor theme used on the login screen.
+OKARU Greeter works without a mouse and lets administrators configure the keyboard layout, Num Lock state, and cursor theme used on the login screen.
 
 - [Keyboard controls](#keyboard-controls)
 - [Keyboard layout](#keyboard-layout)
@@ -20,6 +20,17 @@ The greeter works without a mouse.
 
 | Key | Action |
 |-----|--------|
+| `Enter` | Submit the password |
+| `Ctrl+U` | Delete the selection or everything left of the cursor |
+| `Ctrl+Backspace` / `Ctrl+Delete` | Delete everything left or right of the cursor, so the masked text does not reveal spaces |
+| `Ctrl+←` / `Ctrl+→` | Jump to the start or end of the password |
+| `F3` / `Shift+F3` | Switch to the next / previous session |
+| `Ctrl+Alt+F1`–`F12` | Switch to a virtual terminal (TTY) |
+
+With the mouse, click the user name to switch to the next user, and click the session name at the bottom to
+switch sessions.
+
+-----|--------|
 | `Tab` / `Shift+Tab` | Move focus |
 | `↑` / `↓` | Move focus, or move through an open menu |
 | `Enter` | Submit the password, activate a control, or confirm a menu item |

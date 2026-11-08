@@ -420,43 +420,6 @@ namespace greeter {
     prefs.scheme = file.appearanceScheme.has_value() ? file.appearanceScheme : sync.appearanceScheme;
     prefs.output = file.outputName;
     prefs.scale = file.outputScale;
-    if (file.appearancePasswordStyle.has_value()) {
-      if (*file.appearancePasswordStyle == "random") {
-        prefs.passwordMaskStyle = PasswordMaskStyle::RandomIcons;
-      } else if (*file.appearancePasswordStyle != "default") {
-        kLog.warn("invalid appearance.password_style '{}' (using filled circles)", *file.appearancePasswordStyle);
-      }
-    }
-    if (file.appearanceHideLogo.has_value()) {
-      prefs.hideLogo = *file.appearanceHideLogo;
-    }
-    prefs.powerButtonsPosition = file.appearancePowerButtonsPosition;
-    prefs.schemeSelectorPosition = file.appearanceSchemeSelectorPosition;
-    if (file.clockEnabled.has_value()) {
-      prefs.clockEnabled = *file.clockEnabled;
-    }
-    if (file.clockPosition.has_value()) {
-      constexpr std::array<std::string_view, 7> kClockPositions{"above-panel", "top-left",    "top-center",
-                                                                "top-right",   "bottom-left", "bottom-center",
-                                                                "bottom-right"};
-      if (std::ranges::find(kClockPositions, *file.clockPosition) != kClockPositions.end()) {
-        prefs.clockPosition = *file.clockPosition;
-      } else {
-        kLog.warn("invalid clock.position '{}' (using above-panel)", *file.clockPosition);
-      }
-    }
-    if (file.clockTimeFormat.has_value()) {
-      prefs.clockTimeFormat = *file.clockTimeFormat;
-    }
-    if (file.clockDateFormat.has_value()) {
-      prefs.clockDateFormat = *file.clockDateFormat;
-    }
-    if (file.clockTimeFontSize.has_value()) {
-      prefs.clockTimeFontSize = *file.clockTimeFontSize;
-    }
-    if (file.clockDateFontSize.has_value()) {
-      prefs.clockDateFontSize = *file.clockDateFontSize;
-    }
     if (file.authAllowEmptyPassword.has_value()) {
       prefs.allowEmptyPassword = *file.authAllowEmptyPassword;
     }
