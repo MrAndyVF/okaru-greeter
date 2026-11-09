@@ -306,23 +306,6 @@ namespace greeter::appearance {
       return out;
     }
 
-    [[nodiscard]] std::optional<config::GreeterSyncFile::SyncSessionAction>
-    parseManifestSessionAction(const nlohmann::json& item) {
-      if (!item.is_object()) {
-        return std::nullopt;
-      }
-      const auto action = manifestOptionalString(item, "action");
-      if (!action.has_value()) {
-        return std::nullopt;
-      }
-      config::GreeterSyncFile::SyncSessionAction row;
-      row.action = *action;
-      row.command = manifestOptionalString(item, "command");
-      row.label = manifestOptionalString(item, "label");
-      row.glyph = manifestOptionalString(item, "glyph");
-      return row;
-    }
-
   } // namespace
 
   std::optional<ManifestSyncPayload> parseManifestForSync(const std::filesystem::path& path) {
@@ -379,21 +362,6 @@ namespace greeter::appearance {
         for (const auto& [connector, value] : wallpapersIt->items()) {
           if (value.is_object() && !connector.empty()) {
             payload.appearance.wallpapers[connector] = parseManifestWallpaperObject(value);
-          }
-        }
-      }
-
-      if (const auto sessionIt = root.find("session"); sessionIt != root.end() && sessionIt->is_object()) {
-        if (const auto powerIt = sessionIt->find("power"); powerIt != sessionIt->end() && powerIt->is_object()) {
-          payload.sessionPowerSuspend = manifestOptionalString(*powerIt, "suspend");
-          payload.sessionPowerReboot = manifestOptionalString(*powerIt, "reboot");
-          payload.sessionPowerShutdown = manifestOptionalString(*powerIt, "shutdown");
-        }
-        if (const auto actionsIt = sessionIt->find("actions"); actionsIt != sessionIt->end() && actionsIt->is_array()) {
-          for (const auto& item : *actionsIt) {
-            if (auto row = parseManifestSessionAction(item)) {
-              payload.sessionActions.push_back(std::move(*row));
-            }
           }
         }
       }
@@ -576,7 +544,7 @@ namespace greeter::appearance {
   }
 
   bool applySyncedGreeterPreferences(
-      const std::filesystem::path& stagingDirectory, const bool includeSessionCommands, std::string& errorOut
+      const std::filesystem::path& stagingDirectory, std::string& errorOut
   ) {
     auto readStagedText = [&](std::string_view fileName, std::optional<std::string>& out) -> bool {
       const auto path = stagingDirectory / fileName;
@@ -626,7 +594,6 @@ namespace greeter::appearance {
     const auto stagedSyncPath = stagingSyncTomlPath(stagingDirectory);
     std::error_code ec;
     greeter::GreeterSyncAppearanceUpdate appearanceUpdate;
-    appearanceUpdate.replaceSession = includeSessionCommands;
     if (std::filesystem::is_regular_file(stagedSyncPath, ec) && !ec) {
       const config::GreeterSyncFile staged = config::loadSync(stagedSyncPath);
       if (!staged.appearance.hasCompletePalette()) {
@@ -634,12 +601,6 @@ namespace greeter::appearance {
         return false;
       }
       appearanceUpdate.appearance = staged.appearance;
-      if (includeSessionCommands) {
-        appearanceUpdate.sessionPowerSuspend = staged.sessionPowerSuspend;
-        appearanceUpdate.sessionPowerReboot = staged.sessionPowerReboot;
-        appearanceUpdate.sessionPowerShutdown = staged.sessionPowerShutdown;
-        appearanceUpdate.sessionActions = staged.sessionActions;
-      }
     } else {
       const auto manifestFile = stagingManifestPath(stagingDirectory);
       auto manifestPayload = parseManifestForSync(manifestFile);
@@ -648,12 +609,6 @@ namespace greeter::appearance {
         return false;
       }
       appearanceUpdate.appearance = std::move(manifestPayload->appearance);
-      if (includeSessionCommands) {
-        appearanceUpdate.sessionPowerSuspend = std::move(manifestPayload->sessionPowerSuspend);
-        appearanceUpdate.sessionPowerReboot = std::move(manifestPayload->sessionPowerReboot);
-        appearanceUpdate.sessionPowerShutdown = std::move(manifestPayload->sessionPowerShutdown);
-        appearanceUpdate.sessionActions = std::move(manifestPayload->sessionActions);
-      }
     }
 
     if (!greeter::applyAppearanceSyncGreeterConf(

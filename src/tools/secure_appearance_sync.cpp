@@ -982,11 +982,7 @@ namespace greeter::secure_sync {
           return false;
         }
       }
-      if (sync.sessionLast.has_value()
-          || sync.sessionPowerSuspend.has_value()
-          || sync.sessionPowerReboot.has_value()
-          || sync.sessionPowerShutdown.has_value()
-          || !sync.sessionActions.empty()) {
+      if (sync.sessionLast.has_value()) {
         errorOut = "passwordless appearance sync cannot change session configuration";
         return false;
       }
@@ -1213,7 +1209,7 @@ namespace greeter::secure_sync {
     if (!appearance::installFromStaging(privateStaging.path(), errorOut)) {
       return false;
     }
-    return appearance::applySyncedGreeterPreferences(privateStaging.path(), /*includeSessionCommands=*/false, errorOut);
+    return appearance::applySyncedGreeterPreferences(privateStaging.path(), errorOut);
   }
 
   bool applyLegacyFromStaging(const std::filesystem::path& stagingDirectory, std::string& errorOut) {
@@ -1261,7 +1257,7 @@ namespace greeter::secure_sync {
     if (!appearance::installFromStaging(privateStaging.path(), errorOut)) {
       return false;
     }
-    return appearance::applySyncedGreeterPreferences(privateStaging.path(), /*includeSessionCommands=*/true, errorOut);
+    return appearance::applySyncedGreeterPreferences(privateStaging.path(), errorOut);
   }
 
 } // namespace greeter::secure_sync

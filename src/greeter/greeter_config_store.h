@@ -86,19 +86,6 @@ namespace greeter::config {
     // Sync-owned appearance (palette/wallpaper/theme/font); migrated from legacy appearance.json.
     GreeterTomlAppearance appearance;
 
-    // Sync-owned session power actions; migrated from legacy appearance.json "session.power".
-    std::optional<std::string> sessionPowerSuspend;
-    std::optional<std::string> sessionPowerReboot;
-    std::optional<std::string> sessionPowerShutdown;
-
-    // Sync-owned session menu entries; migrated from legacy appearance.json "session.actions".
-    struct SyncSessionAction {
-      std::string action;
-      std::optional<std::string> command;
-      std::optional<std::string> label;
-      std::optional<std::string> glyph;
-    };
-    std::vector<SyncSessionAction> sessionActions;
   };
 
   [[nodiscard]] GreeterConfigFile loadConfig(const std::filesystem::path& path);

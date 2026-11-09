@@ -38,12 +38,6 @@ is intentionally rejected; install a manual build into a trusted system prefix.
 - shell font (`[shell] font_family`)
 - monitor layout, orientation, and effective per-output scale
 
-The constrained `--sync` operation deliberately excludes session power
-commands and custom session actions. Existing session commands and other
-unrelated values in `sync.toml` are preserved. The authenticated compatibility
-path retains the older payload, including OKARU's configured session power
-commands and actions, because older greeters expect it.
-
 User avatars are also separate from appearance sync. They come from AccountsService, so enable `accountsservice` or `accounts-daemon` if you want the avatar selected in OKARU to appear in the greeter.
 
 The synced font must be available to the greeter account through Fontconfig. System-installed fonts work; fonts installed only in your home directory often do not.

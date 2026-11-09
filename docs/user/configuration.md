@@ -19,7 +19,7 @@ Administrator-controlled settings live in `/var/lib/okaru-greeter/greeter.toml`.
 | Path | Role |
 |------|------|
 | `/var/lib/okaru-greeter/greeter.toml` | Full declarative configuration. Wins over Sync when the same value is set |
-| `/var/lib/okaru-greeter/sync.toml` | Mutable Sync and UI state: appearance, last session/scheme, session actions, and output layout |
+| `/var/lib/okaru-greeter/sync.toml` | Mutable Sync and UI state: appearance, last session/scheme, and output layout |
 | `/var/lib/okaru-greeter/wallpaper*` | Wallpaper images installed by Sync |
 
 If `greeter.toml` is missing, the greeter uses built-in defaults. System setup creates the state directory and files owned by the greetd session user.
