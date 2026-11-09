@@ -54,9 +54,7 @@ namespace {
   }
 
   [[nodiscard]] bool isKnownSessionKey(std::string_view key) {
-    // "power"/"actions" are Sync-only (sync.toml); recognized here only so parseConfig
-    // does not warn about them when parsing sync.toml through the shared session-table loop.
-    return key == "default" || key == "last" || key == "power" || key == "actions";
+    return key == "default" || key == "last";
   }
 
   [[nodiscard]] bool isKnownUserKey(std::string_view key) { return key == "default"; }
@@ -205,7 +203,6 @@ namespace {
           } else if (entryView == "last") {
             config.sessionLast = stringValue(entryNode);
           }
-          // power/actions: Sync-only, parsed directly from the root table by parseSync.
         } else if (keyView == "user") {
           if (!isKnownUserKey(entryView)) {
             warnUnknownSectionKey(path, keyView, entryView);
@@ -606,57 +603,6 @@ namespace {
           table.insert_or_assign(std::string(key), value);
         }
     );
-    toml::table power;
-    insertString(
-        power, "suspend", sync.sessionPowerSuspend,
-        [](toml::table& table, std::string_view key, const std::string& value) {
-          table.insert_or_assign(std::string(key), value);
-        }
-    );
-    insertString(
-        power, "reboot", sync.sessionPowerReboot,
-        [](toml::table& table, std::string_view key, const std::string& value) {
-          table.insert_or_assign(std::string(key), value);
-        }
-    );
-    insertString(
-        power, "shutdown", sync.sessionPowerShutdown,
-        [](toml::table& table, std::string_view key, const std::string& value) {
-          table.insert_or_assign(std::string(key), value);
-        }
-    );
-    if (!power.empty()) {
-      session.insert("power", std::move(power));
-    }
-    if (!sync.sessionActions.empty()) {
-      toml::array actions;
-      for (const auto& action : sync.sessionActions) {
-        if (action.action.empty()) {
-          continue;
-        }
-        toml::table row;
-        row.insert_or_assign("action", action.action);
-        insertString(
-            row, "command", action.command, [](toml::table& table, std::string_view key, const std::string& value) {
-              table.insert_or_assign(std::string(key), value);
-            }
-        );
-        insertString(
-            row, "label", action.label, [](toml::table& table, std::string_view key, const std::string& value) {
-              table.insert_or_assign(std::string(key), value);
-            }
-        );
-        insertString(
-            row, "glyph", action.glyph, [](toml::table& table, std::string_view key, const std::string& value) {
-              table.insert_or_assign(std::string(key), value);
-            }
-        );
-        actions.push_back(std::move(row));
-      }
-      if (!actions.empty()) {
-        session.insert("actions", std::move(actions));
-      }
-    }
     if (!session.empty()) {
       root.insert("session", std::move(session));
     }
@@ -696,37 +642,6 @@ namespace {
     return root;
   }
 
-  [[nodiscard]] std::vector<greeter::config::GreeterSyncFile::SyncSessionAction>
-  parseSyncSessionActions(const toml::array& array, const std::filesystem::path& path) {
-    std::vector<greeter::config::GreeterSyncFile::SyncSessionAction> actions;
-    for (const auto& node : array) {
-      const auto* table = node.as_table();
-      if (table == nullptr) {
-        kLog.warn("{}: session.actions entries must be tables", path.string());
-        continue;
-      }
-      const auto* actionNode = table->get("action");
-      const auto action = actionNode != nullptr ? stringValue(*actionNode) : std::nullopt;
-      if (!action.has_value()) {
-        kLog.warn("{}: session.actions entry is missing 'action'", path.string());
-        continue;
-      }
-      greeter::config::GreeterSyncFile::SyncSessionAction row;
-      row.action = *action;
-      if (const auto* commandNode = table->get("command")) {
-        row.command = stringValue(*commandNode);
-      }
-      if (const auto* labelNode = table->get("label")) {
-        row.label = stringValue(*labelNode);
-      }
-      if (const auto* glyphNode = table->get("glyph")) {
-        row.glyph = stringValue(*glyphNode);
-      }
-      actions.push_back(std::move(row));
-    }
-    return actions;
-  }
-
   [[nodiscard]] greeter::config::GreeterSyncFile parseSync(const toml::table& root, const std::filesystem::path& path) {
     // Reuse config parser, then keep only sync keys (including the Sync-owned appearance table).
     const greeter::config::GreeterConfigFile full = parseConfig(root, path);
@@ -737,33 +652,6 @@ namespace {
     sync.outputTransforms = full.outputTransforms;
     sync.outputScales = full.outputScales;
     sync.appearance = full.appearance;
-
-    if (const auto* sessionNode = root.get("session")) {
-      if (const auto* sessionTable = sessionNode->as_table()) {
-        if (const auto* powerNode = sessionTable->get("power")) {
-          if (const auto* powerTable = powerNode->as_table()) {
-            if (const auto* n = powerTable->get("suspend")) {
-              sync.sessionPowerSuspend = stringValue(*n);
-            }
-            if (const auto* n = powerTable->get("reboot")) {
-              sync.sessionPowerReboot = stringValue(*n);
-            }
-            if (const auto* n = powerTable->get("shutdown")) {
-              sync.sessionPowerShutdown = stringValue(*n);
-            }
-          } else {
-            kLog.warn("{}: session.power must be a table", path.string());
-          }
-        }
-        if (const auto* actionsNode = sessionTable->get("actions")) {
-          if (const auto* actionsArray = actionsNode->as_array()) {
-            sync.sessionActions = parseSyncSessionActions(*actionsArray, path);
-          } else {
-            kLog.warn("{}: session.actions must be an array of tables", path.string());
-          }
-        }
-      }
-    }
 
     return sync;
   }
@@ -909,8 +797,7 @@ namespace greeter::config {
     out << "# okaru-greeter greeter.toml (declarative; Nix-safe; UI and Sync never write this)\n";
     out << "# Last-used session lives in sync.toml; UI/Sync also fall back to sync.toml for scheme.\n";
     out << "# Output layout/transforms/scales fall back to sync.toml when not set here and\n";
-    out << "# output.use_synced_settings is true (default). Session power actions/menu entries are\n";
-    out << "# Sync-only (sync.toml [session.power]/[[session.actions]]) and are not settable here.\n";
+    out << "# output.use_synced_settings is true (default).\n";
     out << "# [session] default, [user] default\n";
     out << "# [appearance] scheme, theme_mode, corner_radius_scale, font_family\n";
     out << "# [appearance.palette] full color role table, [appearance.wallpaper] path/fill_mode/fill_color\n";
@@ -952,8 +839,7 @@ namespace greeter::config {
 
     std::ostringstream out;
     out << "# okaru-greeter sync.toml (UI + Sync; not managed by Nix)\n";
-    out << "# [session] last, [session.power] suspend/reboot/shutdown, [[session.actions]] "
-           "action/command/label/glyph\n";
+    out << "# [session] last\n";
     out << "# [appearance] scheme, theme_mode, corner_radius_scale, font_family\n";
     out << "# [appearance.palette] full color role table, [appearance.wallpaper]/[appearance.wallpapers.<connector>]\n";
     out << "# [output] layout/transforms/scales\n";

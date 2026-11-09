@@ -397,12 +397,6 @@ namespace greeter {
     }
     if (appearanceUpdate.has_value()) {
       sync.appearance = appearanceUpdate->appearance;
-      if (appearanceUpdate->replaceSession) {
-        sync.sessionPowerSuspend = appearanceUpdate->sessionPowerSuspend;
-        sync.sessionPowerReboot = appearanceUpdate->sessionPowerReboot;
-        sync.sessionPowerShutdown = appearanceUpdate->sessionPowerShutdown;
-        sync.sessionActions = appearanceUpdate->sessionActions;
-      }
     }
     return config::writeSync(syncPath, sync);
   }

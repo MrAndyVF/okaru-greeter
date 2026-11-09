@@ -349,7 +349,7 @@ refresh_rate = 120
       error.clear();
       expect(
           "subsequent appearance sync succeeds with output opt-out",
-          greeter::appearance::applySyncedGreeterPreferences(fixture.stagingDirectory, false, error), true, error,
+          greeter::appearance::applySyncedGreeterPreferences(fixture.stagingDirectory, error), true, error,
           passed
       );
       expect("synced palette loads with output opt-out", loadGreeterSyncedAppearance().has_value(), true, {}, passed);
