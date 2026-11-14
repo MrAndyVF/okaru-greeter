@@ -1,4 +1,4 @@
-# Paquete local de OKARU Greeter: compila la rama main de ~/Projects/okaru-greeter (solo lo que está en commits).
+# Paquete local de OKARU Greeter: compila la rama main de ~/Projects/okaru-project/okaru-greeter (solo lo que está en commits).
 pkgname=okaru-greeter
 pkgver=1.0.0
 pkgrel=1
@@ -13,7 +13,7 @@ options=('!debug')
 makedepends=(git meson ninja pkgconf wayland-protocols stb nlohmann-json)
 optdepends=('okaru: sincroniza fondo, colores y monitores desde la shell (paquete propio)'
             'accountsservice: fotos de usuario y cuentas en red (sin él lista /etc/passwd)')
-source=("okaru-greeter::git+file://${OKARU_GREETER_REPO:-$HOME/Projects/okaru-greeter}#branch=main")
+source=("okaru-greeter::git+file://${OKARU_GREETER_REPO:-$HOME/Projects/okaru-project/okaru-greeter}#branch=main")
 sha256sums=(SKIP)
 
 pkgver() {
