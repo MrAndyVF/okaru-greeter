@@ -63,8 +63,10 @@ if not cc.has_header('stb/stb_image_resize2.h')
 endif
 
 libwebp_dep = dependency('libwebp', required: true)
-libjxl_dep = dependency('libjxl', required: true)
-libjxl_threads_dep = dependency('libjxl_threads', required: true)
+# Solo cabeceras: libjxl se abre con dlopen (src/render/core/image_decoder.cpp) porque su soname cambia en cada
+# versión menor y enlazarla dejaba el greeter sin arrancar al actualizar el sistema (0.12 → 0.13).
+libjxl_dep = dependency('libjxl', required: true).partial_dependency(compile_args: true, includes: true)
+libjxl_threads_dep = dependency('libjxl_threads', required: true).partial_dependency(compile_args: true, includes: true)
 
 # ── Wayland protocol generation ───────────────────────────────────────────────
 wayland_scanner    = find_program('wayland-scanner')

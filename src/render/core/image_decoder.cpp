@@ -4,11 +4,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <dlfcn.h>
 #include <jxl/decode.h>
-#include <jxl/decode_cxx.h>
 #include <jxl/resizable_parallel_runner.h>
-#include <jxl/resizable_parallel_runner_cxx.h>
-#include <jxl/types.h>
+#include <memory>
+#include <mutex>
 #include <utility>
 #include <vector>
 #include <webp/decode.h>
@@ -58,9 +58,88 @@ namespace {
     return decoded;
   }
 
+  // libjxl is loaded with dlopen on first use instead of being linked: its soname changes with every minor
+  // release (libjxl.so.0.12 → 0.13) and a linked greeter stopped starting as soon as the system updated it.
+  // The unversioned libjxl.so accepts any installed release from 0.7 on (JxlDecoderSetUnpremultiplyAlpha);
+  // without it only JPEG XL wallpapers fail. The headers above only provide types and enums.
+  struct JxlApi {
+    decltype(&JxlDecoderCreate) decoderCreate = nullptr;
+    decltype(&JxlDecoderDestroy) decoderDestroy = nullptr;
+    decltype(&JxlDecoderSubscribeEvents) decoderSubscribeEvents = nullptr;
+    decltype(&JxlDecoderSetParallelRunner) decoderSetParallelRunner = nullptr;
+    decltype(&JxlDecoderSetUnpremultiplyAlpha) decoderSetUnpremultiplyAlpha = nullptr;
+    decltype(&JxlDecoderSetInput) decoderSetInput = nullptr;
+    decltype(&JxlDecoderCloseInput) decoderCloseInput = nullptr;
+    decltype(&JxlDecoderProcessInput) decoderProcessInput = nullptr;
+    decltype(&JxlDecoderGetBasicInfo) decoderGetBasicInfo = nullptr;
+    decltype(&JxlDecoderImageOutBufferSize) decoderImageOutBufferSize = nullptr;
+    decltype(&JxlDecoderSetImageOutBuffer) decoderSetImageOutBuffer = nullptr;
+    decltype(&JxlResizableParallelRunner) resizableParallelRunner = nullptr;
+    decltype(&JxlResizableParallelRunnerCreate) resizableParallelRunnerCreate = nullptr;
+    decltype(&JxlResizableParallelRunnerDestroy) resizableParallelRunnerDestroy = nullptr;
+    decltype(&JxlResizableParallelRunnerSetThreads) resizableParallelRunnerSetThreads = nullptr;
+    decltype(&JxlResizableParallelRunnerSuggestThreads) resizableParallelRunnerSuggestThreads = nullptr;
+  };
+
+  constexpr std::uint32_t kJxlMinVersion = 7000; // 0.7.0 as major * 1000000 + minor * 1000 + patch
+
+  template <typename T> bool loadSymbol(void* library, const char* name, T& out) {
+    void* symbol = dlsym(library, name);
+    if (symbol == nullptr) {
+      return false;
+    }
+    std::memcpy(&out, &symbol, sizeof(out));
+    return true;
+  }
+
+  // Loaded once and never unloaded; nullptr when libjxl is missing, too old or lacks a symbol.
+  const JxlApi* jxlApi() {
+    static std::once_flag once;
+    static JxlApi api;
+    static bool available = false;
+    std::call_once(once, [] {
+      void* jxl = dlopen("libjxl.so", RTLD_LAZY | RTLD_LOCAL);
+      void* threads = jxl != nullptr ? dlopen("libjxl_threads.so", RTLD_LAZY | RTLD_LOCAL) : nullptr;
+      if (threads == nullptr) {
+        if (jxl != nullptr) {
+          dlclose(jxl);
+        }
+        return;
+      }
+      decltype(&JxlDecoderVersion) version = nullptr;
+      available = loadSymbol(jxl, "JxlDecoderVersion", version)
+          && version() >= kJxlMinVersion
+          && loadSymbol(jxl, "JxlDecoderCreate", api.decoderCreate)
+          && loadSymbol(jxl, "JxlDecoderDestroy", api.decoderDestroy)
+          && loadSymbol(jxl, "JxlDecoderSubscribeEvents", api.decoderSubscribeEvents)
+          && loadSymbol(jxl, "JxlDecoderSetParallelRunner", api.decoderSetParallelRunner)
+          && loadSymbol(jxl, "JxlDecoderSetUnpremultiplyAlpha", api.decoderSetUnpremultiplyAlpha)
+          && loadSymbol(jxl, "JxlDecoderSetInput", api.decoderSetInput)
+          && loadSymbol(jxl, "JxlDecoderCloseInput", api.decoderCloseInput)
+          && loadSymbol(jxl, "JxlDecoderProcessInput", api.decoderProcessInput)
+          && loadSymbol(jxl, "JxlDecoderGetBasicInfo", api.decoderGetBasicInfo)
+          && loadSymbol(jxl, "JxlDecoderImageOutBufferSize", api.decoderImageOutBufferSize)
+          && loadSymbol(jxl, "JxlDecoderSetImageOutBuffer", api.decoderSetImageOutBuffer)
+          && loadSymbol(threads, "JxlResizableParallelRunner", api.resizableParallelRunner)
+          && loadSymbol(threads, "JxlResizableParallelRunnerCreate", api.resizableParallelRunnerCreate)
+          && loadSymbol(threads, "JxlResizableParallelRunnerDestroy", api.resizableParallelRunnerDestroy)
+          && loadSymbol(threads, "JxlResizableParallelRunnerSetThreads", api.resizableParallelRunnerSetThreads)
+          && loadSymbol(threads, "JxlResizableParallelRunnerSuggestThreads", api.resizableParallelRunnerSuggestThreads);
+      if (!available) {
+        api = {};
+        dlclose(threads);
+        dlclose(jxl);
+      }
+    });
+    return available ? &api : nullptr;
+  }
+
+  // JPEG XL signature (bare codestream or ISOBMFF container), checked without loading libjxl.
   bool isJxl(const std::uint8_t* data, std::size_t size) {
-    const JxlSignature signature = JxlSignatureCheck(data, size);
-    return signature == JXL_SIG_CODESTREAM || signature == JXL_SIG_CONTAINER;
+    static constexpr std::uint8_t kContainer[] = {0x00, 0x00, 0x00, 0x0C, 0x4A, 0x58,
+                                                  0x4C, 0x20, 0x0D, 0x0A, 0x87, 0x0A};
+    return (size >= 2 && data[0] == 0xFF && data[1] == 0x0A)
+        || (size >= sizeof(kContainer) && std::memcmp(data, kContainer, sizeof(kContainer)) == 0);
   }
 
   // Decoder and runner are call-local: worker threads (wallpaper loading and
@@ -73,46 +152,54 @@ namespace {
       return std::nullopt;
     };
 
-    auto runner = JxlResizableParallelRunnerMake(nullptr);
-    auto decoder = JxlDecoderMake(nullptr);
+    const JxlApi* jxl = jxlApi();
+    if (jxl == nullptr) {
+      return fail("JPEG XL decoding requires libjxl");
+    }
+    std::unique_ptr<void, decltype(jxl->resizableParallelRunnerDestroy)> runner(
+        jxl->resizableParallelRunnerCreate(nullptr), jxl->resizableParallelRunnerDestroy
+    );
+    std::unique_ptr<JxlDecoder, decltype(jxl->decoderDestroy)> decoder(
+        jxl->decoderCreate(nullptr), jxl->decoderDestroy
+    );
     if (runner == nullptr || decoder == nullptr) {
       return fail("libjxl: failed to create decoder");
     }
 
-    if (JxlDecoderSubscribeEvents(decoder.get(), JXL_DEC_BASIC_INFO | JXL_DEC_FULL_IMAGE) != JXL_DEC_SUCCESS
-        || JxlDecoderSetParallelRunner(decoder.get(), JxlResizableParallelRunner, runner.get()) != JXL_DEC_SUCCESS
+    if (jxl->decoderSubscribeEvents(decoder.get(), JXL_DEC_BASIC_INFO | JXL_DEC_FULL_IMAGE) != JXL_DEC_SUCCESS
+        || jxl->decoderSetParallelRunner(decoder.get(), jxl->resizableParallelRunner, runner.get()) != JXL_DEC_SUCCESS
         // Codestreams flagged alpha_premultiplied decode premultiplied; the pipeline wants straight alpha.
         // No-op for straight-alpha and alpha-less images.
-        || JxlDecoderSetUnpremultiplyAlpha(decoder.get(), JXL_TRUE) != JXL_DEC_SUCCESS
-        || JxlDecoderSetInput(decoder.get(), data, size) != JXL_DEC_SUCCESS) {
+        || jxl->decoderSetUnpremultiplyAlpha(decoder.get(), JXL_TRUE) != JXL_DEC_SUCCESS
+        || jxl->decoderSetInput(decoder.get(), data, size) != JXL_DEC_SUCCESS) {
       return fail("libjxl: failed to configure decoder");
     }
-    JxlDecoderCloseInput(decoder.get());
+    jxl->decoderCloseInput(decoder.get());
 
     constexpr JxlPixelFormat kFormat{4, JXL_TYPE_UINT8, JXL_NATIVE_ENDIAN, 0};
     DecodedRasterImage decoded;
     for (;;) {
-      switch (JxlDecoderProcessInput(decoder.get())) {
+      switch (jxl->decoderProcessInput(decoder.get())) {
       case JXL_DEC_BASIC_INFO: {
         JxlBasicInfo info;
-        if (JxlDecoderGetBasicInfo(decoder.get(), &info) != JXL_DEC_SUCCESS) {
+        if (jxl->decoderGetBasicInfo(decoder.get(), &info) != JXL_DEC_SUCCESS) {
           return fail("libjxl: failed to read image header");
         }
         // Orientation is already applied; xsize/ysize are the display dimensions.
         decoded.width = static_cast<int>(info.xsize);
         decoded.height = static_cast<int>(info.ysize);
-        JxlResizableParallelRunnerSetThreads(
-            runner.get(), JxlResizableParallelRunnerSuggestThreads(info.xsize, info.ysize)
+        jxl->resizableParallelRunnerSetThreads(
+            runner.get(), jxl->resizableParallelRunnerSuggestThreads(info.xsize, info.ysize)
         );
         break;
       }
       case JXL_DEC_NEED_IMAGE_OUT_BUFFER: {
         std::size_t needed = 0;
-        if (JxlDecoderImageOutBufferSize(decoder.get(), &kFormat, &needed) != JXL_DEC_SUCCESS) {
+        if (jxl->decoderImageOutBufferSize(decoder.get(), &kFormat, &needed) != JXL_DEC_SUCCESS) {
           return fail("libjxl: failed to size output buffer");
         }
         decoded.pixels.resize(needed);
-        if (JxlDecoderSetImageOutBuffer(decoder.get(), &kFormat, decoded.pixels.data(), decoded.pixels.size())
+        if (jxl->decoderSetImageOutBuffer(decoder.get(), &kFormat, decoded.pixels.data(), decoded.pixels.size())
             != JXL_DEC_SUCCESS) {
           return fail("libjxl: failed to bind output buffer");
         }
